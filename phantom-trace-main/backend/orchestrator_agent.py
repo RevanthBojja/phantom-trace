@@ -1,0 +1,126 @@
+import os
+from dotenv import load_dotenv
+
+def _load_env() -> None:
+    """Load backend environment variables from .env, then .env.example as fallback."""
+    base_dir = os.path.dirname(__file__)
+    if not load_dotenv(os.path.join(base_dir, ".env")):
+        load_dotenv(os.path.join(base_dir, ".env.example"))
+
+
+_load_env()
+
+def safe_invoke(agent, input_dict, config):
+    input_dict["messages"] = [
+        m for m in input_dict["messages"]
+        if m.content and m.content.strip()
+    ]
+    return agent.invoke(input_dict, config)
+
+def read(response):
+    def _content_to_text(content) -> str:
+        if isinstance(content, str):
+            return content.strip()
+        if isinstance(content, list):
+            text_parts = []
+            for part in content:
+                if isinstance(part, dict) and part.get("type") == "text":
+                    txt = part.get("text", "")
+                    if txt:
+                        text_parts.append(txt)
+            return "\n".join(text_parts).strip()
+        return str(content).strip()
+
+    if isinstance(response, dict) and "messages" in response:
+        messages = response["messages"]
+
+        for message in reversed(messages):
+            if not hasattr(message, "content"):
+                continue
+            if getattr(message, "type", "") in ("ai", "assistant"):
+                text = _content_to_text(message.content)
+                if text:
+                    return text
+
+        for message in reversed(messages):
+            if not hasattr(message, "content"):
+                continue
+            text = _content_to_text(message.content)
+            if text:
+                return text
+
+    return str(response)
+
+from langchain_google_genai import ChatGoogleGenerativeAI
+
+def _build_model() -> ChatGoogleGenerativeAI:
+    api_key = os.getenv("GOOGLE_API_KEY", "").strip()
+    if not api_key:
+        raise ValueError("GOOGLE_API_KEY is not set. Add it to backend/.env or backend/.env.example")
+
+    return ChatGoogleGenerativeAI(
+        model="gemini-2.5-flash",
+        temperature=1.0,
+        google_api_key=api_key,
+    )
+
+
+model = _build_model()
+
+from langchain.messages import HumanMessage
+from langchain.agents import create_agent
+from langgraph.checkpoint.memory import InMemorySaver
+from langchain.tools import tool
+
+
+MOCK_ORCHESTRATOR_SCENARIOS = {
+    "scenario_id": "orc-mock-001",
+    "title": "Suspicious payroll export after risky login",
+    "summary": (
+        "A privileged account logged in from a new TOR exit IP at 02:14 and exported a large payroll dataset."
+    ),
+    "recommended_agents": ["auth_agent", "behavioural_agent", "network_agent", "explainer_agent"],
+    "reasoning": {
+        "auth_agent": "Validate login anomalies and MFA bypass indicators",
+        "behavioural_agent": "Assess off-hours and unusual data movement behavior",
+        "network_agent": "Inspect source IP reputation and exfiltration patterns",
+        "explainer_agent": "Summarize findings and remediation priorities",
+    },
+}
+
+
+@tool
+def get_mock_orchestration_scenario() -> dict:
+    """Returns a mock incident scenario that orchestrator can use when no database is available."""
+    return MOCK_ORCHESTRATOR_SCENARIOS
+
+orchestrator_agent = create_agent(
+    model=model,
+    tools=[get_mock_orchestration_scenario],
+    system_prompt=(
+        "You are an orchestrator agent. Based on the given prompt, choose which agents to invoke and return "
+        "a python list of agent names. Agents available: network_agent, behavioural_agent, auth_agent, "
+        "explainer_agent. Keep selection minimal to save cost. If the user asks for mock/demo data, "
+        "call get_mock_orchestration_scenario first."
+    ),
+    checkpointer=InMemorySaver()
+)
+
+def invoke_orchestrator_agent(user_message: str, thread_id: str = "1") -> str:
+    """
+    Invoke the orchestrator agent with a user message.
+    
+    Args:
+        user_message: The user's input message
+        thread_id: Thread ID for session management
+    
+    Returns:
+        The orchestrator agent's response as a string
+    """
+    config = {"configurable": {"thread_id": thread_id}}
+    
+    response = safe_invoke(orchestrator_agent, {
+        "messages": [HumanMessage(content=user_message)]
+    }, config)
+    
+    return read(response)
