@@ -42,6 +42,7 @@ def read(response):
 
 import time
 import os
+import json
 from dotenv import load_dotenv
 
 def _load_env() -> None:
@@ -113,6 +114,16 @@ MOCK_AUTH_STATE = {
     "anomaly_flags": ["impossible_travel", "mfa_bypass", "credential_spray"],
     "confidence": 0.9,
 }
+
+
+def _mock_auth_prompt(user_message: str) -> str:
+    return (
+        f"{user_message.strip()}\n\n"
+        "Use the mock auth state below directly as the source of truth. "
+        "Do not rely on runtime state being preloaded, and do not call tools that require missing state. "
+        "Analyze the data and return a real agent response with flags, confidence, and reasoning.\n\n"
+        f"Mock auth state:\n{json.dumps(MOCK_AUTH_STATE, indent=2)}"
+    )
 
 
 def fetchDB(source_ip: str, user_id: str, time_window: int) -> dict:
@@ -300,7 +311,7 @@ def invoke_auth_agent(user_message: str, thread_id: str = "1"):
     config = {"configurable": {"thread_id": thread_id}}
     response = safe_invoke(
         auth_agent,
-        {"messages": [HumanMessage(content=user_message)]},
+        {"messages": [HumanMessage(content=_mock_auth_prompt(user_message) if "mock data mode" in user_message.lower() or "mock auth state" in user_message.lower() else user_message)]},
         config
     )
     return read(response)

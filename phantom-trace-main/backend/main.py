@@ -8,6 +8,7 @@ from auth_agent import invoke_auth_agent
 from behavioural_agent import invoke_behavioural_agent
 from orchestrator_agent import invoke_orchestrator_agent
 from explainer_agent import invoke_explainer_agent
+from agent_result_cache import build_explainer_context, store_agent_result
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -134,6 +135,22 @@ def _invoke_selected_agent(agent: str, message: str, thread_id: str) -> str:
     raise ValueError(f"Unsupported agent: {agent}")
 
 
+def _invoke_and_cache_agent(agent: str, message: str, thread_id: str) -> str:
+    agent_response = _invoke_selected_agent(agent=agent, message=message, thread_id=thread_id)
+    store_agent_result(
+        thread_id=thread_id,
+        agent_name=agent,
+        user_message=message,
+        raw_response=agent_response,
+    )
+    return agent_response
+
+
+def _invoke_explainer_with_context(message: str, thread_id: str) -> str:
+    contextual_message = build_explainer_context(thread_id=thread_id, user_message=message)
+    return invoke_explainer_agent(user_message=contextual_message, thread_id=thread_id)
+
+
 @app.get("/")
 async def root():
     """Health check endpoint"""
@@ -156,11 +173,17 @@ async def unified_chat(request: UnifiedChatRequest):
 
         selected_agent = request.agent.lower().strip()
         thinking_steps = _thinking_steps_for_agent(selected_agent)
-        agent_response = _invoke_selected_agent(
-            agent=selected_agent,
-            message=request.message,
-            thread_id=request.thread_id,
-        )
+        if selected_agent == "explainer":
+            agent_response = _invoke_explainer_with_context(
+                message=request.message,
+                thread_id=request.thread_id,
+            )
+        else:
+            agent_response = _invoke_and_cache_agent(
+                agent=selected_agent,
+                message=request.message,
+                thread_id=request.thread_id,
+            )
 
         return UnifiedChatResponse(
             response=agent_response,
@@ -194,10 +217,10 @@ async def call_network_agent(request: NetworkAgentRequest):
                 detail="Message cannot be empty"
             )
         
-        # Invoke the network agent
-        agent_response = invoke_network_agent(
-            user_message=request.message,
-            thread_id=request.thread_id
+        agent_response = _invoke_and_cache_agent(
+            agent="network",
+            message=request.message,
+            thread_id=request.thread_id,
         )
         
         return NetworkAgentResponse(
@@ -232,10 +255,10 @@ async def call_auth_agent(request: AuthAgentRequest):
                 detail="Message cannot be empty"
             )
 
-        # Invoke the authentication agent
-        agent_response = invoke_auth_agent(
-            user_message=request.message,
-            thread_id=request.thread_id
+        agent_response = _invoke_and_cache_agent(
+            agent="auth",
+            message=request.message,
+            thread_id=request.thread_id,
         )
 
         return AuthAgentResponse(
@@ -270,10 +293,10 @@ async def call_behavioural_agent(request: BehaviouralAgentRequest):
                 detail="Message cannot be empty"
             )
 
-        # Invoke the behavioural agent
-        agent_response = invoke_behavioural_agent(
-            user_message=request.message,
-            thread_id=request.thread_id
+        agent_response = _invoke_and_cache_agent(
+            agent="behavioural",
+            message=request.message,
+            thread_id=request.thread_id,
         )
 
         return BehaviouralAgentResponse(
@@ -308,10 +331,10 @@ async def call_orchestrator_agent(request: OrchestratorAgentRequest):
                 detail="Message cannot be empty"
             )
 
-        # Invoke the orchestrator agent
-        agent_response = invoke_orchestrator_agent(
-            user_message=request.message,
-            thread_id=request.thread_id
+        agent_response = _invoke_and_cache_agent(
+            agent="orchestrator",
+            message=request.message,
+            thread_id=request.thread_id,
         )
 
         return OrchestratorAgentResponse(
@@ -346,10 +369,9 @@ async def call_explainer_agent(request: ExplainerAgentRequest):
                 detail="Message cannot be empty"
             )
 
-        # Invoke the explainer agent
-        agent_response = invoke_explainer_agent(
-            user_message=request.message,
-            thread_id=request.thread_id
+        agent_response = _invoke_explainer_with_context(
+            message=request.message,
+            thread_id=request.thread_id,
         )
 
         return ExplainerAgentResponse(

@@ -66,6 +66,8 @@ Thumbs.db
 .env
 .env.*
 !.env.example
+backend/agent_results_cache.sqlite3
+backend/agent_results_cache*.db
 
 # ------------------------------
 # Runtime logs and temp files

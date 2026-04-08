@@ -1,4 +1,5 @@
 import os
+import json
 from dotenv import load_dotenv
 import aiohttp
 from datetime import datetime
@@ -93,6 +94,16 @@ MOCK_NETWORK_STATE = {
     "anomaly_flags": ["c2_beacon", "dns_tunnel", "possible_exfiltration"],
     "confidence": 0.92,
 }
+
+
+def _mock_network_prompt(user_message: str) -> str:
+    return (
+        f"{user_message.strip()}\n\n"
+        "Use the mock network state below directly as the source of truth. "
+        "Do not rely on runtime state being preloaded, and do not call tools that require missing state. "
+        "Analyze the data and return a real agent response with flags, confidence, and reasoning.\n\n"
+        f"Mock network state:\n{json.dumps(MOCK_NETWORK_STATE, indent=2)}"
+    )
 
 
 # ==================== HELPER FUNCTIONS ====================
@@ -424,7 +435,7 @@ def invoke_network_agent(user_message: str, thread_id: str = "1"):
     config = {"configurable": {"thread_id": thread_id}}
     response = safe_invoke(
         network_agent,
-        {"messages": [HumanMessage(content=user_message)]},
+        {"messages": [HumanMessage(content=_mock_network_prompt(user_message) if "mock data mode" in user_message.lower() or "mock network state" in user_message.lower() else user_message)]},
         config
     )
     return read(response)

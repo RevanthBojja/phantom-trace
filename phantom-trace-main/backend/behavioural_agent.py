@@ -1,4 +1,5 @@
 import os
+import json
 import math
 from typing import List, Dict, Optional, Annotated
 from dotenv import load_dotenv
@@ -81,6 +82,16 @@ MOCK_BEHAVIOURAL_STATE = {
     "anomaly_flags": ["data_exfiltration", "off_hours_access"],
     "confidence": 0.91,
 }
+
+
+def _mock_behavioural_prompt(user_message: str) -> str:
+    return (
+        f"{user_message.strip()}\n\n"
+        "Use the mock behavioural state below directly as the source of truth. "
+        "Do not rely on runtime state being preloaded, and do not call tools that require missing state. "
+        "Analyze the data and return a real agent response with flags, confidence, and reasoning.\n\n"
+        f"Mock behavioural state:\n{json.dumps(MOCK_BEHAVIOURAL_STATE, indent=2)}"
+    )
 
 
 def safe_invoke(agent, input_dict, config):
@@ -309,7 +320,7 @@ def invoke_behavioural_agent(user_message: str, thread_id: str = "1"):
     config = {"configurable": {"thread_id": thread_id}}
     response = safe_invoke(
         behavioural_agent,
-        {"messages": [HumanMessage(content=user_message)]},
+        {"messages": [HumanMessage(content=_mock_behavioural_prompt(user_message) if "mock data mode" in user_message.lower() or "mock behavioural state" in user_message.lower() else user_message)]},
         config
     )
     return read(response)
