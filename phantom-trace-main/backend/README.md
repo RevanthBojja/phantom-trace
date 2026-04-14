@@ -118,70 +118,56 @@ All agent endpoints use the same request schema:
 }
 ```
 
-## Mock Data Prompts (No DB Required)
+### POST /events/ingest
+Persist a raw event in SQLite so specialist agents can analyze real telemetry.
 
-Use these exact messages in the `message` field to force each agent into mock/demo mode.
-
-### Network Agent mock prompt
-```text
-Use mock data mode. Load your mock network state, run anomaly analysis, and return detected flags with confidence.
+**Request Body:**
+```json
+{
+  "thread_id": "session-123",
+  "log_source": "sysmon",
+  "log_type": "network",
+  "event_payload": {
+    "source_ip": "10.1.2.5",
+    "destination_ip": "198.51.100.17",
+    "destination_port": 443,
+    "bytes_out": 950000
+  }
+}
 ```
 
-### Auth Agent mock prompt
-```text
-Use mock data mode. Load your mock auth state, analyze brute-force and MFA anomalies, and summarize risk.
-```
+### GET /events/latest/{thread_id}
+Fetch the latest persisted event for a thread.
 
-### Behavioural Agent mock prompt
-```text
-Use mock data mode. Load your mock behavioural state, compute deviation insights, and explain anomalous features.
-```
+## Real Data Workflow (SQLite)
 
-### Orchestrator Agent mock prompt
-```text
-Use mock data mode. Pull your mock orchestration scenario and return the minimal list of agents to invoke with reasons.
-```
+1. Ingest telemetry with `POST /events/ingest`.
+2. Run orchestrator/specialist agents with the same `thread_id`.
+3. Backend stores agent responses plus inferred enabled flags in `agent_results_cache.sqlite3`.
+4. Explainer automatically receives:
+   - latest event payload
+   - enabled flags per agent
+   - cached specialist findings
 
-### Explainer Agent mock prompt
-```text
-Use mock data mode. Load your mock explainer state and produce a final incident summary with severity, confidence breakdown, and prioritized remediation.
-```
+### Quick cURL example
 
-### Quick cURL examples
-
-Network:
+Ingest event:
 ```bash
-curl -X POST "http://localhost:8000/call-networkAgent" \
+curl -X POST "http://localhost:8000/events/ingest" \
   -H "Content-Type: application/json" \
-  -d '{"message":"Use mock data mode. Load your mock network state, run anomaly analysis, and return detected flags with confidence.","thread_id":"demo-1"}'
+  -d '{
+    "thread_id":"session-123",
+    "log_source":"sysmon",
+    "log_type":"network",
+    "event_payload":{"source_ip":"10.1.2.5","destination_ip":"198.51.100.17","destination_port":443,"bytes_out":950000}
+  }'
 ```
 
-Auth:
-```bash
-curl -X POST "http://localhost:8000/call-authAgent" \
-  -H "Content-Type: application/json" \
-  -d '{"message":"Use mock data mode. Load your mock auth state, analyze brute-force and MFA anomalies, and summarize risk.","thread_id":"demo-1"}'
-```
-
-Behavioural:
-```bash
-curl -X POST "http://localhost:8000/call-behaviouralAgent" \
-  -H "Content-Type: application/json" \
-  -d '{"message":"Use mock data mode. Load your mock behavioural state, compute deviation insights, and explain anomalous features.","thread_id":"demo-1"}'
-```
-
-Orchestrator:
+Run orchestrator:
 ```bash
 curl -X POST "http://localhost:8000/call-orchestratorAgent" \
   -H "Content-Type: application/json" \
-  -d '{"message":"Use mock data mode. Pull your mock orchestration scenario and return the minimal list of agents to invoke with reasons.","thread_id":"demo-1"}'
-```
-
-Explainer:
-```bash
-curl -X POST "http://localhost:8000/call-explainerAgent" \
-  -H "Content-Type: application/json" \
-  -d '{"message":"Use mock data mode. Load your mock explainer state and produce a final incident summary with severity, confidence breakdown, and prioritized remediation.","thread_id":"demo-1"}'
+  -d '{"message":"Route this incident to the right agents.","thread_id":"session-123"}'
 ```
 
 ## Project Structure

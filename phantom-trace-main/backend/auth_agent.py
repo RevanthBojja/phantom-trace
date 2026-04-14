@@ -6,6 +6,16 @@ def safe_invoke(agent, input_dict, config):
     return agent.invoke(input_dict, config)
 
 def read(response):
+    if isinstance(response, dict) and response.get("structured_response") is not None:
+        structured = response["structured_response"]
+        if hasattr(structured, "model_dump"):
+            import json
+            return json.dumps(structured.model_dump(), indent=2)
+        if isinstance(structured, dict):
+            import json
+            return json.dumps(structured, indent=2)
+        return str(structured)
+
     def _content_to_text(content) -> str:
         if isinstance(content, str):
             return content.strip()
@@ -42,7 +52,6 @@ def read(response):
 
 import time
 import os
-import json
 from dotenv import load_dotenv
 
 def _load_env() -> None:
@@ -95,35 +104,15 @@ class AuthAgentState(AgentState):
     messages: Annotated[List[BaseMessage], add_messages]  # <-- ADD THIS
 
 
-MOCK_AUTH_STATE = {
-    "user_id": "u-7781",
-    "source_ip": "45.155.205.233",
-    "auth_method": "mfa",
-    "auth_result": "success",
-    "target_resource": "/admin/finance/export",
-    "mfa_bypassed": True,
-    "login_timestamp": "2026-04-01T02:14:00",
-    "user_baseline": {
-        "typical_country": "IN",
-        "typical_login_hours": [9, 20],
-    },
-    "failed_attempt_count": 14,
-    "unique_users_from_ip": 4,
-    "privilege_level": "admin",
-    "post_login_actions": ["export_payroll_csv", "disable_audit_webhook"],
-    "anomaly_flags": ["impossible_travel", "mfa_bypass", "credential_spray"],
-    "confidence": 0.9,
-}
-
-
-def _mock_auth_prompt(user_message: str) -> str:
-    return (
-        f"{user_message.strip()}\n\n"
-        "Use the mock auth state below directly as the source of truth. "
-        "Do not rely on runtime state being preloaded, and do not call tools that require missing state. "
-        "Analyze the data and return a real agent response with flags, confidence, and reasoning.\n\n"
-        f"Mock auth state:\n{json.dumps(MOCK_AUTH_STATE, indent=2)}"
-    )
+class AuthAgentStructuredResponse(BaseModel):
+    severity_label: str
+    severity_score: float
+    confidence_score: float
+    anomaly_flags: List[str]
+    attack_classification: str
+    risk_summary: str
+    evidence: List[str]
+    recommended_actions: List[str]
 
 
 def fetchDB(source_ip: str, user_id: str, time_window: int) -> dict:
@@ -199,25 +188,6 @@ def get_auth_agent_state(runtime: ToolRuntime) -> str:
     )
 
 
-@tool
-def get_mock_auth_log() -> dict:
-    """Returns a representative mock authentication log payload for testing without a database."""
-    return MOCK_AUTH_STATE
-
-
-@tool
-def load_mock_auth_state(runtime: ToolRuntime) -> Command:
-    """Loads predefined mock authentication telemetry into the current agent state."""
-    return Command(update={
-        **MOCK_AUTH_STATE,
-        "messages": [
-            ToolMessage(
-                "Mock auth state loaded successfully",
-                tool_call_id=runtime.tool_call_id,
-            )
-        ]
-    })
-
 from datetime import datetime
 import requests
 @tool
@@ -288,17 +258,16 @@ auth_agent = create_agent(
     tools = [
         set_auth_agent_state,
         get_auth_agent_state,
-        get_mock_auth_log,
-        load_mock_auth_state,
         detect_brute_force_attack,
         check_time_and_location_anamoly,
         check_mfa_anamoly,
     ],
     system_prompt=(
         "You are an authentication anomaly detection agent. You analyze login events for signs of compromise. "
-        "You use your tools to perform tasks. If the user asks for mock/demo data, call load_mock_auth_state "
-        "before analysis."
+        "You use your tools to perform tasks based on real persisted telemetry context included in the prompt. "
+        "Return calculated, structured results only using the response schema."
     ),
+    response_format=AuthAgentStructuredResponse,
     state_schema=AuthAgentState,
     checkpointer=InMemorySaver()
 )
@@ -311,7 +280,7 @@ def invoke_auth_agent(user_message: str, thread_id: str = "1"):
     config = {"configurable": {"thread_id": thread_id}}
     response = safe_invoke(
         auth_agent,
-        {"messages": [HumanMessage(content=_mock_auth_prompt(user_message) if "mock data mode" in user_message.lower() or "mock auth state" in user_message.lower() else user_message)]},
+        {"messages": [HumanMessage(content=user_message)]},
         config
     )
     return read(response)

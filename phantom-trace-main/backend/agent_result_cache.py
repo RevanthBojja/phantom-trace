@@ -35,6 +35,38 @@ def initialize_cache() -> None:
         connection.execute(
             "CREATE INDEX IF NOT EXISTS idx_agent_results_thread_id ON agent_results(thread_id, created_at)"
         )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS threat_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                thread_id TEXT NOT NULL,
+                log_source TEXT NOT NULL,
+                log_type TEXT NOT NULL,
+                event_payload TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_threat_events_thread_id ON threat_events(thread_id, created_at)"
+        )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS agent_flags (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                thread_id TEXT NOT NULL,
+                agent_name TEXT NOT NULL,
+                flag_key TEXT NOT NULL,
+                enabled INTEGER NOT NULL,
+                confidence REAL NOT NULL,
+                evidence TEXT,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_agent_flags_thread_id ON agent_flags(thread_id, created_at)"
+        )
 
 
 initialize_cache()
@@ -63,6 +95,32 @@ def _extract_findings(lines: Iterable[str]) -> List[str]:
 
 
 def parse_agent_response(raw_response: str) -> Dict[str, Any]:
+    try:
+        structured = json.loads(raw_response)
+        if isinstance(structured, dict):
+            summary = (
+                structured.get("risk_summary")
+                or structured.get("executive_summary")
+                or structured.get("routing_reason")
+                or structured.get("additional_notes")
+                or "Structured agent response"
+            )
+
+            findings: List[str] = []
+            for key in ("anomaly_flags", "top_findings", "evidence", "selected_agents"):
+                value = structured.get(key)
+                if isinstance(value, list):
+                    findings.extend(str(item) for item in value if item)
+
+            return {
+                "summary": str(summary),
+                "findings": findings,
+                "sections": {"structured": [json.dumps(structured)]},
+                "line_count": 1,
+            }
+    except json.JSONDecodeError:
+        pass
+
     lines = _split_response_lines(raw_response)
     findings = _extract_findings(lines)
 
@@ -87,6 +145,213 @@ def parse_agent_response(raw_response: str) -> Dict[str, Any]:
         "sections": sections,
         "line_count": len(lines),
     }
+
+
+def store_threat_event(
+    *,
+    thread_id: str,
+    log_source: str,
+    log_type: str,
+    event_payload: Dict[str, Any],
+) -> Dict[str, Any]:
+    _ensure_cache_ready()
+    record = {
+        "thread_id": thread_id.strip(),
+        "log_source": (log_source or "unknown").strip().lower(),
+        "log_type": (log_type or "unknown").strip().lower(),
+        "event_payload": event_payload,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+    with _connect() as connection:
+        connection.execute(
+            """
+            INSERT INTO threat_events (
+                thread_id, log_source, log_type, event_payload, created_at
+            ) VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                record["thread_id"],
+                record["log_source"],
+                record["log_type"],
+                json.dumps(record["event_payload"]),
+                record["created_at"],
+            ),
+        )
+
+    return record
+
+
+def get_threat_events(thread_id: str, *, limit: int = 25) -> List[Dict[str, Any]]:
+    _ensure_cache_ready()
+    with _connect() as connection:
+        rows = connection.execute(
+            """
+            SELECT thread_id, log_source, log_type, event_payload, created_at
+            FROM threat_events
+            WHERE thread_id = ?
+            ORDER BY datetime(created_at) DESC, id DESC
+            LIMIT ?
+            """,
+            (thread_id, limit),
+        ).fetchall()
+
+    return [
+        {
+            "thread_id": row["thread_id"],
+            "log_source": row["log_source"],
+            "log_type": row["log_type"],
+            "event_payload": json.loads(row["event_payload"]),
+            "created_at": row["created_at"],
+        }
+        for row in rows
+    ]
+
+
+def get_latest_threat_event(thread_id: str) -> Optional[Dict[str, Any]]:
+    events = get_threat_events(thread_id, limit=1)
+    return events[0] if events else None
+
+
+def get_latest_threat_event_for_agent(thread_id: str, agent_name: str) -> Optional[Dict[str, Any]]:
+    """
+    Returns the most recent event for a specific specialist domain when available,
+    and falls back to the latest event in the thread.
+    """
+    normalized_agent = _normalize_agent_name(agent_name)
+    preferred_types: Dict[str, List[str]] = {
+        "network": ["network"],
+        "auth": ["auth", "access"],
+        "behavioural": ["behavioral", "behavioural", "activity"],
+        "orchestrator": ["network", "auth", "behavioral", "behavioural", "activity", "malware"],
+        "explainer": ["network", "auth", "behavioral", "behavioural", "activity", "malware"],
+    }
+
+    events = get_threat_events(thread_id, limit=50)
+    if not events:
+        return None
+
+    desired = set(preferred_types.get(normalized_agent, []))
+    if not desired:
+        return events[0]
+
+    for event in events:
+        log_type = (event.get("log_type") or "").strip().lower()
+        log_source = (event.get("log_source") or "").strip().lower()
+        if log_type in desired or log_source in desired:
+            return event
+
+    return events[0]
+
+
+def infer_flags_from_agent_response(agent_name: str, raw_response: str) -> List[Dict[str, Any]]:
+    text = raw_response.lower()
+    try:
+        structured = json.loads(raw_response)
+        if isinstance(structured, dict):
+            text = json.dumps(structured).lower()
+    except json.JSONDecodeError:
+        pass
+
+    normalized_agent = _normalize_agent_name(agent_name)
+    catalog: Dict[str, List[Dict[str, Any]]] = {
+        "network": [
+            {"flag_key": "port_scan", "keywords": ["port scan", "reconnaissance", "horizontal scan"], "confidence": 0.75},
+            {"flag_key": "c2_beacon", "keywords": ["c2", "beacon", "command and control"], "confidence": 0.85},
+            {"flag_key": "dns_tunnel", "keywords": ["dns tunnel", "dns tunneling", "high entropy dns"], "confidence": 0.82},
+            {"flag_key": "possible_exfiltration", "keywords": ["exfiltration", "bytes out spike", "data egress"], "confidence": 0.8},
+        ],
+        "auth": [
+            {"flag_key": "brute_force", "keywords": ["brute force", "failed login", "password spray"], "confidence": 0.78},
+            {"flag_key": "credential_stuffing", "keywords": ["credential stuffing", "credential spray", "multiple accounts"], "confidence": 0.81},
+            {"flag_key": "mfa_bypass", "keywords": ["mfa bypass", "mfa fatigue", "mfa anomaly"], "confidence": 0.86},
+            {"flag_key": "impossible_travel", "keywords": ["impossible travel", "new country", "off-hours login"], "confidence": 0.8},
+            {"flag_key": "privilege_escalation", "keywords": ["privilege escalation", "admin api", "permissions change"], "confidence": 0.83},
+        ],
+        "behavioural": [
+            {"flag_key": "data_exfiltration", "keywords": ["data exfiltration", "bytes out", "bulk export"], "confidence": 0.82},
+            {"flag_key": "off_hours_access", "keywords": ["off-hours", "unusual time", "temporal anomaly"], "confidence": 0.77},
+            {"flag_key": "new_resource_access", "keywords": ["new resource", "first-time access", "lateral movement"], "confidence": 0.74},
+            {"flag_key": "peer_group_deviation", "keywords": ["peer group", "deviation score", "baseline deviation"], "confidence": 0.76},
+        ],
+    }
+
+    inferred_flags: List[Dict[str, Any]] = []
+    for rule in catalog.get(normalized_agent, []):
+        if any(keyword in text for keyword in rule["keywords"]):
+            inferred_flags.append(
+                {
+                    "flag_key": rule["flag_key"],
+                    "enabled": True,
+                    "confidence": rule["confidence"],
+                    "evidence": f"Matched keywords: {', '.join(rule['keywords'])}",
+                }
+            )
+
+    return inferred_flags
+
+
+def store_agent_flags(
+    *,
+    thread_id: str,
+    agent_name: str,
+    flags: List[Dict[str, Any]],
+) -> None:
+    _ensure_cache_ready()
+    normalized_agent = _normalize_agent_name(agent_name)
+    created_at = datetime.now(timezone.utc).isoformat()
+
+    with _connect() as connection:
+        connection.execute(
+            "DELETE FROM agent_flags WHERE thread_id = ? AND agent_name = ?",
+            (thread_id, normalized_agent),
+        )
+
+        for flag in flags:
+            connection.execute(
+                """
+                INSERT INTO agent_flags (
+                    thread_id, agent_name, flag_key, enabled, confidence, evidence, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    thread_id,
+                    normalized_agent,
+                    (flag.get("flag_key") or "unknown").strip().lower(),
+                    1 if flag.get("enabled", True) else 0,
+                    float(flag.get("confidence", 0.0)),
+                    flag.get("evidence"),
+                    created_at,
+                ),
+            )
+
+
+def get_enabled_flags(thread_id: str) -> Dict[str, List[Dict[str, Any]]]:
+    _ensure_cache_ready()
+    with _connect() as connection:
+        rows = connection.execute(
+            """
+            SELECT agent_name, flag_key, enabled, confidence, evidence, created_at
+            FROM agent_flags
+            WHERE thread_id = ? AND enabled = 1
+            ORDER BY agent_name ASC, confidence DESC, flag_key ASC
+            """,
+            (thread_id,),
+        ).fetchall()
+
+    by_agent: Dict[str, List[Dict[str, Any]]] = {}
+    for row in rows:
+        by_agent.setdefault(row["agent_name"], []).append(
+            {
+                "flag_key": row["flag_key"],
+                "enabled": bool(row["enabled"]),
+                "confidence": row["confidence"],
+                "evidence": row["evidence"],
+                "created_at": row["created_at"],
+            }
+        )
+
+    return by_agent
 
 
 def store_agent_result(
@@ -194,7 +459,10 @@ def combine_cached_agent_results(thread_id: str) -> Dict[str, Any]:
 
 def build_explainer_context(thread_id: str, user_message: str) -> str:
     combined_results = combine_cached_agent_results(thread_id)
-    if not combined_results["by_agent"]:
+    enabled_flags = get_enabled_flags(thread_id)
+    latest_event = get_latest_threat_event(thread_id)
+
+    if not combined_results["by_agent"] and not enabled_flags and not latest_event:
         return user_message.strip()
 
     formatted_agents: List[str] = []
@@ -214,10 +482,29 @@ def build_explainer_context(thread_id: str, user_message: str) -> str:
             )
         )
 
-    cache_block = "\n\n".join(formatted_agents)
+    cache_block = "\n\n".join(formatted_agents) if formatted_agents else "No cached specialist findings were found."
+    flag_lines: List[str] = []
+    if enabled_flags:
+        for agent_name, flags in enabled_flags.items():
+            for flag in flags:
+                flag_lines.append(
+                    f"- {agent_name}.{flag['flag_key']} (confidence={flag['confidence']:.2f})"
+                )
+    else:
+        flag_lines.append("- No enabled flags recorded for this thread")
+
+    event_block = "No stored threat event found for this thread."
+    if latest_event:
+        event_block = (
+            f"Latest event source/type: {latest_event['log_source']}/{latest_event['log_type']}\n"
+            f"Event payload: {json.dumps(latest_event['event_payload'], ensure_ascii=True)}"
+        )
+
     return (
         "Use the cached specialist findings below as primary context before answering.\n\n"
         f"Thread ID: {thread_id}\n"
+        f"Latest threat event:\n{event_block}\n\n"
+        f"Enabled flags:\n{'\n'.join(flag_lines)}\n\n"
         f"Cached specialist findings:\n{cache_block}\n\n"
         f"User request:\n{user_message.strip()}"
     )

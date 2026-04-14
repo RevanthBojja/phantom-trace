@@ -8,3 +8,5 @@ langgraph>=1.1.0,<1.2.0
 langgraph-prebuilt>=1.0.9,<1.1.0
 aiohttp>=3.10.0
 python-dotenv==1.0.0
+pymongo>=4.6.0
+motor>=3.3.0

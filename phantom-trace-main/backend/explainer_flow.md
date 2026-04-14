@@ -1,30 +1,56 @@
 # Explainer Flow
 
-Use this file as the copy-paste reference for verifying the orchestrator -> specialist agents -> explainer flow.
-
-Mock prompts still call the real agents. The backend injects the mock state into the prompt so the model produces a response from that data instead of relying on live data sources.
+Use this file as the copy-paste reference for verifying the orchestrator -> specialist agents -> explainer flow with real persisted telemetry.
 
 ## What This Flow Does
 
-1. Run the orchestrator in mock data mode.
-2. Read which specialist agents it recommends.
-3. Run only those specialist agents with the same `thread_id`.
-4. Their responses are cached in the backend.
-5. Call the explainer with the same `thread_id` so it receives the combined cached findings.
+1. Persist a raw threat event into SQLite using one thread_id.
+2. Run the orchestrator to select specialist agents.
+3. Run selected specialist agents with the same thread_id.
+4. Backend caches specialist responses and inferred enabled flags.
+5. Run explainer with the same thread_id so it receives latest event + enabled flags + cached findings.
 
-Important: the orchestrator does not automatically execute the specialist agents in one backend call. You run the specialist endpoints yourself after the orchestrator returns its recommendation.
+Important: the orchestrator does not automatically execute specialist agents in one backend call. You execute specialist endpoints after reading orchestrator output.
 
 ## Recommended Test Sequence
 
-Use one shared thread id for the whole run.
+Use one shared thread_id for the whole run.
 
-Example thread id:
+Example thread_id:
 
 ```text
-demo-1
+session-123
 ```
 
-### Step 1: Call the orchestrator
+### Step 1: Ingest a real event
+
+Endpoint:
+
+```text
+POST /events/ingest
+```
+
+Example request body:
+
+```json
+{
+  "thread_id": "session-123",
+  "log_source": "sysmon",
+  "log_type": "network",
+  "event_payload": {
+    "source_ip": "10.1.2.5",
+    "destination_ip": "198.51.100.17",
+    "destination_port": 443,
+    "bytes_out": 950000,
+    "dns_queries": [
+      "aGVsbG8td29ybGQ.evil-c2.net",
+      "cdn.company.com"
+    ]
+  }
+}
+```
+
+### Step 2: Call the orchestrator
 
 Endpoint:
 
@@ -32,105 +58,52 @@ Endpoint:
 POST /call-orchestratorAgent
 ```
 
-Copy-paste prompt:
-
-```text
-Use mock data mode. Pull your mock orchestration scenario and return the minimal list of agents to invoke with reasons.
-```
-
 Example request body:
 
 ```json
 {
-  "message": "Use mock data mode. Pull your mock orchestration scenario and return the minimal list of agents to invoke with reasons.",
-  "thread_id": "demo-1"
+  "message": "Route this incident to the minimum specialist agents required.",
+  "thread_id": "session-123"
 }
 ```
 
 Expected result:
 
-- The orchestrator should return the recommended specialist agents.
-- The mock prompt should be handled by the real agent model with mock context embedded in the request.
-- In the current mock scenario, those are typically:
-  - auth_agent
-  - behavioural_agent
-  - network_agent
-  - explainer_agent
+- The orchestrator returns recommended specialists.
+- Recommendations should align with the latest event context for this thread_id.
 
-### Step 2: Call the specialist agents the orchestrator recommends
+### Step 3: Call specialist agents
 
-Use the same `thread_id` for every request.
+Use the same thread_id for each request.
 
-#### Network agent
-
-Endpoint:
-
-```text
-POST /call-networkAgent
-```
-
-Copy-paste prompt:
-
-```text
-Use mock data mode. Load your mock network state, run anomaly analysis, and return detected flags with confidence.
-```
-
-Example request body:
+Network example:
 
 ```json
 {
-  "message": "Use mock data mode. Load your mock network state, run anomaly analysis, and return detected flags with confidence.",
-  "thread_id": "demo-1"
+  "message": "Analyze network indicators and list anomaly flags with confidence.",
+  "thread_id": "session-123"
 }
 ```
 
-#### Auth agent
-
-Endpoint:
-
-```text
-POST /call-authAgent
-```
-
-Copy-paste prompt:
-
-```text
-Use mock data mode. Load your mock auth state, analyze brute-force and MFA anomalies, and summarize risk.
-```
-
-Example request body:
+Auth example:
 
 ```json
 {
-  "message": "Use mock data mode. Load your mock auth state, analyze brute-force and MFA anomalies, and summarize risk.",
-  "thread_id": "demo-1"
+  "message": "Analyze authentication and access risk indicators.",
+  "thread_id": "session-123"
 }
 ```
 
-#### Behavioural agent
-
-Endpoint:
-
-```text
-POST /call-behaviouralAgent
-```
-
-Copy-paste prompt:
-
-```text
-Use mock data mode. Load your mock behavioural state, compute deviation insights, and explain anomalous features.
-```
-
-Example request body:
+Behavioural example:
 
 ```json
 {
-  "message": "Use mock data mode. Load your mock behavioural state, compute deviation insights, and explain anomalous features.",
-  "thread_id": "demo-1"
+  "message": "Analyze behavioural deviation and potential exfiltration signals.",
+  "thread_id": "session-123"
 }
 ```
 
-### Step 3: Call the explainer
+### Step 4: Call the explainer
 
 Endpoint:
 
@@ -138,78 +111,27 @@ Endpoint:
 POST /call-explainerAgent
 ```
 
-Use the same `thread_id` so the explainer can read the cached specialist results.
-
-Copy-paste prompt for aggregated analysis:
-
-```text
-Review the findings from the cached specialist agents and produce a final incident summary with severity, confidence, impact, and prioritized remediation.
-```
-
 Example request body:
 
 ```json
 {
-  "message": "Review the findings from the cached specialist agents and produce a final incident summary with severity, confidence, impact, and prioritized remediation.",
-  "thread_id": "demo-1"
+  "message": "Synthesize all findings into final severity, narrative, and remediation actions.",
+  "thread_id": "session-123"
 }
 ```
 
 Expected result:
 
-- The explainer should summarize the combined findings.
-- It should explain how the auth, behavioural, and network signals relate to each other.
-- It should give a prioritized remediation plan based on the full context.
+- Explainer receives and uses:
+  - latest persisted event for thread_id
+  - enabled flags inferred from specialist outputs
+  - cached specialist findings
+- Explainer returns a unified incident narrative with prioritized actions.
 
-## Direct Copy-Paste Prompts
+## Useful Validation Endpoint
 
-Use these exactly as written.
-
-### Orchestrator mock prompt
-
-```text
-Use mock data mode. Pull your mock orchestration scenario and return the minimal list of agents to invoke with reasons.
-```
-
-### Network mock prompt
+Fetch latest event for a thread:
 
 ```text
-Use mock data mode. Load your mock network state, run anomaly analysis, and return detected flags with confidence.
+GET /events/latest/{thread_id}
 ```
-
-### Auth mock prompt
-
-```text
-Use mock data mode. Load your mock auth state, analyze brute-force and MFA anomalies, and summarize risk.
-```
-
-### Behavioural mock prompt
-
-```text
-Use mock data mode. Load your mock behavioural state, compute deviation insights, and explain anomalous features.
-```
-
-### Explainer aggregation prompt
-
-```text
-Review the findings from the cached specialist agents and produce a final incident summary with severity, confidence, impact, and prioritized remediation.
-```
-
-## If You Want To Test Explainer Standalone
-
-If you want to test only the explainer mock state without using cached specialist results, use this prompt instead:
-
-```text
-Use mock data mode. Load your mock explainer state and produce a final incident summary with severity, confidence breakdown, and prioritized remediation.
-```
-
-That path is useful for verifying the explainer agent itself, but not the full cached workflow.
-
-Even in standalone mock mode, the explainer still calls the model. The mock state is supplied in the prompt so the response comes from the agent, not a hardcoded string.
-
-## Quick Rule
-
-- Use orchestrator mock mode first when you want the full pipeline.
-- Use specialist mock prompts next so their results get cached.
-- Those mock prompts still call the agent model with embedded mock state.
-- Use the explainer aggregation prompt last so it summarizes the combined context.

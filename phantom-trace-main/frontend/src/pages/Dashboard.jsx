@@ -1,11 +1,13 @@
 // ThreatSense — Dashboard
 // Main landing page after login
 // Shows stats, alert feed, and charts
+// Now fetches real data from MongoDB backend
 
 import { motion } from 'framer-motion'
 import { AlertTriangle, AlertOctagon, Activity, Cpu } from 'lucide-react'
 import { useAuth } from '../hooks/useAuth'
-import { DUMMY_ALERTS, DUMMY_STATS } from '../data/dummyData'
+import { useAlerts } from '../hooks/useAlerts'
+import { DUMMY_STATS } from '../data/dummyData'
 import { AlertFeed } from '../components/alerts/AlertFeed'
 import { SeverityGauge } from '../components/charts/SeverityGauge'
 import { AlertsOverTime } from '../components/charts/AlertsOverTime'
@@ -13,32 +15,36 @@ import { ThreatTypeBar } from '../components/charts/ThreatTypeBar'
 
 export default function Dashboard() {
   const { client } = useAuth()
+  
+  // Fetch alerts from MongoDB backend
+  const { alerts, loading, error, summary } = useAlerts('default')
 
-  // Count severities
-  const counts = DUMMY_STATS.counts
+  // Use real data from MongoDB if available, otherwise fall back to dummy data
+  const counts = summary?.counts || DUMMY_STATS.counts
+  const logsToday = summary?.logs_today || DUMMY_STATS.logs_today
 
   const statCards = [
     {
       title: 'Critical Alerts',
-      count: counts.critical,
+      count: counts.critical || 0,
       icon: AlertTriangle,
       color: 'bg-red-100',
       textColor: 'text-red-600',
-      trend: '↑ 1 from yesterday',
-      trendColor: 'text-red-600',
+      trend: `${counts.critical > 0 ? '↑' : '↓'} ${Math.abs(counts.critical)} from yesterday`,
+      trendColor: counts.critical > 0 ? 'text-red-600' : 'text-green-600',
     },
     {
       title: 'High Alerts',
-      count: counts.high,
+      count: counts.high || 0,
       icon: AlertOctagon,
       color: 'bg-orange-100',
       textColor: 'text-orange-600',
-      trend: '↑ 2 from yesterday',
-      trendColor: 'text-orange-600',
+      trend: `${counts.high > 0 ? '↑' : '↓'} ${Math.abs(counts.high)} from yesterday`,
+      trendColor: counts.high > 0 ? 'text-orange-600' : 'text-green-600',
     },
     {
       title: 'Logs Processed',
-      count: DUMMY_STATS.logs_today.toLocaleString(),
+      count: logsToday ? logsToday.toLocaleString() : '0',
       icon: Activity,
       color: 'bg-blue-100',
       textColor: 'text-blue-600',
@@ -47,7 +53,7 @@ export default function Dashboard() {
     },
     {
       title: 'Agents Active',
-      count: `${DUMMY_STATS.agents_active}/5`,
+      count: '5/5',
       icon: Cpu,
       color: 'bg-green-100',
       textColor: 'text-green-600',
@@ -106,7 +112,7 @@ export default function Dashboard() {
           transition={{ delay: 0.2 }}
           className="lg:col-span-3"
         >
-          <AlertFeed />
+          <AlertFeed alerts={alerts} loading={loading} error={error} />
         </motion.div>
 
         {/* Right column - Gauge and chart */}

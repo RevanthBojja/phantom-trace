@@ -1,5 +1,8 @@
 import os
 from dotenv import load_dotenv
+import json
+from pydantic import BaseModel
+from typing import List
 
 def _load_env() -> None:
     """Load backend environment variables from .env, then .env.example as fallback."""
@@ -18,6 +21,14 @@ def safe_invoke(agent, input_dict, config):
     return agent.invoke(input_dict, config)
 
 def read(response):
+    if isinstance(response, dict) and response.get("structured_response") is not None:
+        structured = response["structured_response"]
+        if hasattr(structured, "model_dump"):
+            return json.dumps(structured.model_dump(), indent=2)
+        if isinstance(structured, dict):
+            return json.dumps(structured, indent=2)
+        return str(structured)
+
     def _content_to_text(content) -> str:
         if isinstance(content, str):
             return content.strip()
@@ -67,42 +78,30 @@ def _build_model() -> ChatGoogleGenerativeAI:
 
 model = _build_model()
 
+
+class OrchestratorStructuredResponse(BaseModel):
+    selected_agents: List[str]
+    routing_reason: str
+    severity_label: str
+    confidence_score: float
+    execution_order: List[str]
+    additional_notes: str
+
 from langchain.messages import HumanMessage
 from langchain.agents import create_agent
 from langgraph.checkpoint.memory import InMemorySaver
-from langchain.tools import tool
-
-
-MOCK_ORCHESTRATOR_SCENARIOS = {
-    "scenario_id": "orc-mock-001",
-    "title": "Suspicious payroll export after risky login",
-    "summary": (
-        "A privileged account logged in from a new TOR exit IP at 02:14 and exported a large payroll dataset."
-    ),
-    "recommended_agents": ["auth_agent", "behavioural_agent", "network_agent", "explainer_agent"],
-    "reasoning": {
-        "auth_agent": "Validate login anomalies and MFA bypass indicators",
-        "behavioural_agent": "Assess off-hours and unusual data movement behavior",
-        "network_agent": "Inspect source IP reputation and exfiltration patterns",
-        "explainer_agent": "Summarize findings and remediation priorities",
-    },
-}
-
-
-@tool
-def get_mock_orchestration_scenario() -> dict:
-    """Returns a mock incident scenario that orchestrator can use when no database is available."""
-    return MOCK_ORCHESTRATOR_SCENARIOS
 
 orchestrator_agent = create_agent(
     model=model,
-    tools=[get_mock_orchestration_scenario],
+    tools=[],
     system_prompt=(
         "You are an orchestrator agent. Based on the given prompt, choose which agents to invoke and return "
-        "a python list of agent names. Agents available: network_agent, behavioural_agent, auth_agent, "
-        "explainer_agent. Keep selection minimal to save cost. If the user asks for mock/demo data, "
-        "call get_mock_orchestration_scenario first."
+        "a structured routing plan. Agents available: network_agent, behavioural_agent, auth_agent, "
+        "explainer_agent. Keep selection minimal to save cost and prioritize agents that match the latest "
+        "persisted telemetry context included in the prompt. Return calculated, structured results only "
+        "using the response schema."
     ),
+    response_format=OrchestratorStructuredResponse,
     checkpointer=InMemorySaver()
 )
 

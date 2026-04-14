@@ -1,8 +1,9 @@
 import os
-import json
 import math
 from typing import List, Dict, Optional, Annotated
+import json
 from dotenv import load_dotenv
+from pydantic import BaseModel
 
 def _load_env() -> None:
     """Load backend environment variables from .env, then .env.example as fallback."""
@@ -58,40 +59,16 @@ class BehaviouralAgentState(AgentState):
     messages: Annotated[List[BaseMessage], add_messages]
 
 
-MOCK_BEHAVIOURAL_STATE = {
-    "session_id": "beh-mock-001",
-    "entity_id": "u-7781",
-    "entity_type": "user",
-    "observation_window_hours": 24,
-    "current_feature_vector": [4.8, 2.9, 0.92, 0.83],
-    "baseline_feature_vector": [1.1, 0.9, 0.22, 0.17],
-    "feature_labels": [
-        "login_frequency",
-        "avg_bytes_moved",
-        "new_resource_ratio",
-        "off_hours_activity",
-    ],
-    "deviation_score": 4.2,
-    "peer_group_id": "finance-admins",
-    "peer_group_deviation_score": 3.7,
-    "anomalous_features": ["avg_bytes_moved", "off_hours_activity"],
-    "data_access_delta": {"percent_change": 290, "records_accessed": 15423},
-    "bytes_out_delta": {"percent_change": 420, "bytes_out": 18230444},
-    "new_resource_access": ["/admin/finance/export", "/billing/raw-ledger"],
-    "temporal_anomalies": ["02:14 local login", "03:01 bulk export"],
-    "anomaly_flags": ["data_exfiltration", "off_hours_access"],
-    "confidence": 0.91,
-}
-
-
-def _mock_behavioural_prompt(user_message: str) -> str:
-    return (
-        f"{user_message.strip()}\n\n"
-        "Use the mock behavioural state below directly as the source of truth. "
-        "Do not rely on runtime state being preloaded, and do not call tools that require missing state. "
-        "Analyze the data and return a real agent response with flags, confidence, and reasoning.\n\n"
-        f"Mock behavioural state:\n{json.dumps(MOCK_BEHAVIOURAL_STATE, indent=2)}"
-    )
+class BehaviouralAgentStructuredResponse(BaseModel):
+    severity_label: str
+    severity_score: float
+    confidence_score: float
+    anomaly_flags: List[str]
+    anomalous_features: List[str]
+    deviation_score: float
+    risk_summary: str
+    evidence: List[str]
+    recommended_actions: List[str]
 
 
 def safe_invoke(agent, input_dict, config):
@@ -103,6 +80,14 @@ def safe_invoke(agent, input_dict, config):
 
 
 def read(response):
+    if isinstance(response, dict) and response.get("structured_response") is not None:
+        structured = response["structured_response"]
+        if hasattr(structured, "model_dump"):
+            return json.dumps(structured.model_dump(), indent=2)
+        if isinstance(structured, dict):
+            return json.dumps(structured, indent=2)
+        return str(structured)
+
     def _content_to_text(content) -> str:
         if isinstance(content, str):
             return content.strip()
@@ -196,25 +181,6 @@ def get_behavioural_agent_state(runtime: ToolRuntime) -> str:
 
 
 @tool
-def get_mock_behavioural_log() -> dict:
-    """Returns representative mock behavioural telemetry for testing without a database."""
-    return MOCK_BEHAVIOURAL_STATE
-
-
-@tool
-def load_mock_behavioural_state(runtime: ToolRuntime) -> Command:
-    """Loads predefined mock behavioural telemetry into the current agent state."""
-    return Command(update={
-        **MOCK_BEHAVIOURAL_STATE,
-        "messages": [
-            ToolMessage(
-                "Mock behavioural state loaded successfully",
-                tool_call_id=runtime.tool_call_id,
-            )
-        ]
-    })
-
-@tool
 def fetch_entity_baseline(entity_id: str, entity_type: str) -> dict:
     """
     Fetches the entity's behavioral baseline from TimescaleDB — a rolling
@@ -293,8 +259,6 @@ def update_entity_baseline(entity_id: str, new_observations: dict) -> bool:
 tools = [
     set_behavioural_agent_state,
     get_behavioural_agent_state,
-    get_mock_behavioural_log,
-    load_mock_behavioural_state,
     fetch_entity_baseline,
     compute_deviation_score,
     update_entity_baseline,
@@ -305,9 +269,10 @@ behavioural_agent = create_agent(
     tools=tools,
     system_prompt=(
         "You are a behavioural anomaly detection agent. You analyze login events for signs of compromise. "
-        "You use your tools to perform tasks. If the user asks for mock/demo data, call "
-        "load_mock_behavioural_state before analysis."
+        "You use your tools to perform tasks based on real persisted telemetry context included in the prompt. "
+        "Return calculated, structured results only using the response schema."
     ),
+    response_format=BehaviouralAgentStructuredResponse,
     state_schema=BehaviouralAgentState,
     checkpointer=InMemorySaver()
 )
@@ -320,7 +285,7 @@ def invoke_behavioural_agent(user_message: str, thread_id: str = "1"):
     config = {"configurable": {"thread_id": thread_id}}
     response = safe_invoke(
         behavioural_agent,
-        {"messages": [HumanMessage(content=_mock_behavioural_prompt(user_message) if "mock data mode" in user_message.lower() or "mock behavioural state" in user_message.lower() else user_message)]},
+        {"messages": [HumanMessage(content=user_message)]},
         config
     )
     return read(response)

@@ -345,7 +345,7 @@ export const DUMMY_CLIENT = {
   email: "maneesh@ecomstore.com",
   website_name: "EcomStore",
   website_url: "https://ecomstore.com",
-  api_key: "ts_live_k9x2mq7rtp4j8nve",
+  api_key: "<redacted>",  // Example only
   plan: "pro",
   created_at: "2026-02-01T10:00:00Z",
   alerts_this_month: 47,

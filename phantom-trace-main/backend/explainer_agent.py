@@ -1,5 +1,6 @@
 import os
 from typing import Dict, List, Annotated
+import json
 
 from dotenv import load_dotenv
 from pydantic import BaseModel
@@ -52,35 +53,14 @@ class ExplainerAgentState(AgentState):
     messages: Annotated[List[BaseMessage], add_messages]
 
 
-MOCK_EXPLAINER_STATE = {
-    "all_findings": {
-        "NET-001": AgentFinding(
-            finding_id="NET-001",
-            description="Beacon-like periodic outbound HTTPS traffic to high-risk ASN",
-        ),
-        "AUTH-001": AgentFinding(
-            finding_id="AUTH-001",
-            description="Successful admin login after multiple failures and MFA bypass signal",
-        ),
-        "BEH-001": AgentFinding(
-            finding_id="BEH-001",
-            description="Large off-hours payroll export far above baseline",
-        ),
-    },
-    "composite_severity": 8.8,
-    "recommended_actions": [
-        "Disable compromised account and revoke all active sessions",
-        "Block source IP and related ASN ranges pending investigation",
-        "Quarantine affected host and preserve forensic artifacts",
-        "Force password reset and enforce phishing-resistant MFA",
-    ],
-    "confidence_breakdown": {
-        "network": 0.91,
-        "auth": 0.88,
-        "behavioural": 0.93,
-        "overall": 0.9,
-    },
-}
+class ExplainerAgentStructuredResponse(BaseModel):
+    severity_label: str
+    composite_severity: float
+    confidence_score: float
+    top_findings: List[str]
+    confidence_breakdown: Dict[str, float]
+    recommended_actions: List[str]
+    executive_summary: str
 
 
 def safe_invoke(agent, input_dict, config):
@@ -92,6 +72,14 @@ def safe_invoke(agent, input_dict, config):
 
 
 def read(response):
+    if isinstance(response, dict) and response.get("structured_response") is not None:
+        structured = response["structured_response"]
+        if hasattr(structured, "model_dump"):
+            return json.dumps(structured.model_dump(), indent=2)
+        if isinstance(structured, dict):
+            return json.dumps(structured, indent=2)
+        return str(structured)
+
     def _content_to_text(content) -> str:
         if isinstance(content, str):
             return content.strip()
@@ -157,28 +145,6 @@ def get_explainer_agent_state(runtime: ToolRuntime) -> str:
         f"Composite Severity: {runtime.state.get('composite_severity')}, "
         f"Recommended Actions: {runtime.state.get('recommended_actions')}, "
         f"Confidence Breakdown: {runtime.state.get('confidence_breakdown')}"
-    )
-
-
-@tool
-def get_mock_explainer_findings() -> dict:
-    """Returns representative combined findings for explainer testing without a database."""
-    return MOCK_EXPLAINER_STATE
-
-
-@tool
-def load_mock_explainer_state(runtime: ToolRuntime) -> Command:
-    """Loads predefined aggregated findings into the current explainer state."""
-    return Command(
-        update={
-            **MOCK_EXPLAINER_STATE,
-            "messages": [
-                ToolMessage(
-                    "Mock explainer state loaded successfully",
-                    tool_call_id=runtime.tool_call_id,
-                )
-            ],
-        }
     )
 
 
@@ -258,16 +224,16 @@ explainer_agent = create_agent(
     tools=[
         set_explainer_agent_state,
         get_explainer_agent_state,
-        get_mock_explainer_findings,
-        load_mock_explainer_state,
         recommend_remediation,
     ],
     system_prompt=(
         "You are an explainer agent. "
         "You compile findings from all specialist agents into a clear summary with severity, "
-        "confidence rationale, and prioritized remediation recommendations. If the user asks for mock/demo "
-        "data, call load_mock_explainer_state before generating the summary."
+        "confidence rationale, and prioritized remediation recommendations. Use persisted findings and enabled "
+        "flags included in the prompt context as your primary inputs. Return calculated, structured results only "
+        "using the response schema."
     ),
+    response_format=ExplainerAgentStructuredResponse,
     state_schema=ExplainerAgentState,
     checkpointer=InMemorySaver(),
 )

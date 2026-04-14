@@ -18,7 +18,6 @@ import AlertDetail from './pages/AlertDetail'
 import LogExplorer from './pages/LogExplorer'
 import AgentMonitor from './pages/AgentMonitor'
 import ThreatMap from './pages/ThreatMap'
-import MitreView from './pages/MitreView'
 import Chat from './pages/Chat'
 import Reports from './pages/Reports'
 
@@ -45,7 +44,6 @@ export default function App() {
             <Route path="/logs" element={<LogExplorer />} />
             <Route path="/agents" element={<AgentMonitor />} />
             <Route path="/map" element={<ThreatMap />} />
-            <Route path="/mitre" element={<MitreView />} />
             <Route path="/chat" element={<Chat />} />
             <Route path="/reports" element={<Reports />} />
           </Route>

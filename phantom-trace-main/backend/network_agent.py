@@ -1,11 +1,12 @@
 import os
-import json
 from dotenv import load_dotenv
 import aiohttp
 from datetime import datetime
 import math
 from collections import Counter
 from typing import List, Dict, Optional, Annotated
+import json
+from pydantic import BaseModel
 
 def _load_env() -> None:
     """Load backend environment variables from .env, then .env.example as fallback."""
@@ -64,46 +65,15 @@ class NetworkAgentState(AgentState):
     messages: Annotated[List[BaseMessage], add_messages]
 
 
-MOCK_NETWORK_STATE = {
-    "session_id": "net-mock-001",
-    "source_ip": "185.220.101.32",
-    "destination_ip": "10.0.3.24",
-    "destination_port": 443,
-    "protocol": "TCP",
-    "bytes_in": 48231,
-    "bytes_out": 912443,
-    "connection_count": 127,
-    "dns_queries": [
-        "aGVsbG8td29ybGQ.evil-c2.net",
-        "cdn-assets.safe-site.com",
-        "xK92mNpQrVzAbCdEfGhIjKlMnOpQ.evil-c2.net",
-    ],
-    "http_uri": "/api/v1/sync",
-    "user_agent": "python-requests/2.31",
-    "traffic_baseline": {
-        "avg_daily_connections": 32,
-        "avg_daily_bytes_out": 180000,
-    },
-    "geo_data": {
-        "country": "NL",
-        "asn": "AS9009",
-        "is_datacenter": True,
-        "is_tor": True,
-    },
-    "ip_reputation_score": 8.6,
-    "anomaly_flags": ["c2_beacon", "dns_tunnel", "possible_exfiltration"],
-    "confidence": 0.92,
-}
-
-
-def _mock_network_prompt(user_message: str) -> str:
-    return (
-        f"{user_message.strip()}\n\n"
-        "Use the mock network state below directly as the source of truth. "
-        "Do not rely on runtime state being preloaded, and do not call tools that require missing state. "
-        "Analyze the data and return a real agent response with flags, confidence, and reasoning.\n\n"
-        f"Mock network state:\n{json.dumps(MOCK_NETWORK_STATE, indent=2)}"
-    )
+class NetworkAgentStructuredResponse(BaseModel):
+    severity_label: str
+    severity_score: float
+    confidence_score: float
+    anomaly_flags: List[str]
+    attack_classification: str
+    risk_summary: str
+    evidence: List[str]
+    recommended_actions: List[str]
 
 
 # ==================== HELPER FUNCTIONS ====================
@@ -115,7 +85,23 @@ def safe_invoke(agent, input_dict, config):
     return agent.invoke(input_dict, config)
 
 
+async def safe_ainvoke(agent, input_dict, config):
+    input_dict["messages"] = [
+        m for m in input_dict["messages"]
+        if m.content and m.content.strip()
+    ]
+    return await agent.ainvoke(input_dict, config)
+
+
 def read(response):
+    if isinstance(response, dict) and response.get("structured_response") is not None:
+        structured = response["structured_response"]
+        if hasattr(structured, "model_dump"):
+            return json.dumps(structured.model_dump(), indent=2)
+        if isinstance(structured, dict):
+            return json.dumps(structured, indent=2)
+        return str(structured)
+
     def _content_to_text(content) -> str:
         if isinstance(content, str):
             return content.strip()
@@ -191,43 +177,23 @@ def get_network_agent_state(runtime: ToolRuntime) -> str:
     Returns the current NetworkAgentState so that agents which require the state information can access it by using this tool.
     """
     return (
-        f"Session ID: {runtime.state['session_id']}, "
-        f"Source IP: {runtime.state['source_ip']}, "
-        f"Destination IP: {runtime.state['destination_ip']}, "
-        f"Destination Port: {runtime.state['destination_port']}, "
-        f"Protocol: {runtime.state['protocol']}, "
-        f"Bytes In: {runtime.state['bytes_in']}, "
-        f"Bytes Out: {runtime.state['bytes_out']}, "
-        f"Connection Count: {runtime.state['connection_count']}, "
-        f"DNS Queries: {runtime.state['dns_queries']}, "
-        f"HTTP URI: {runtime.state['http_uri']}, "
-        f"User Agent: {runtime.state['user_agent']}, "
-        f"Traffic Baseline: {runtime.state['traffic_baseline']}, "
-        f"Geo Data: {runtime.state['geo_data']}, "
-        f"IP Reputation Score: {runtime.state['ip_reputation_score']}, "
-        f"Anomaly Flags: {runtime.state['anomaly_flags']}, "
-        f"Confidence: {runtime.state['confidence']}"
+        f"Session ID: {runtime.state.get('session_id')}, "
+        f"Source IP: {runtime.state.get('source_ip')}, "
+        f"Destination IP: {runtime.state.get('destination_ip')}, "
+        f"Destination Port: {runtime.state.get('destination_port')}, "
+        f"Protocol: {runtime.state.get('protocol')}, "
+        f"Bytes In: {runtime.state.get('bytes_in')}, "
+        f"Bytes Out: {runtime.state.get('bytes_out')}, "
+        f"Connection Count: {runtime.state.get('connection_count')}, "
+        f"DNS Queries: {runtime.state.get('dns_queries')}, "
+        f"HTTP URI: {runtime.state.get('http_uri')}, "
+        f"User Agent: {runtime.state.get('user_agent')}, "
+        f"Traffic Baseline: {runtime.state.get('traffic_baseline')}, "
+        f"Geo Data: {runtime.state.get('geo_data')}, "
+        f"IP Reputation Score: {runtime.state.get('ip_reputation_score')}, "
+        f"Anomaly Flags: {runtime.state.get('anomaly_flags')}, "
+        f"Confidence: {runtime.state.get('confidence')}"
     )
-
-
-@tool
-def get_mock_network_log() -> dict:
-    """Returns a representative mock network log payload for testing without a database."""
-    return MOCK_NETWORK_STATE
-
-
-@tool
-def load_mock_network_state(runtime: ToolRuntime) -> Command:
-    """Loads predefined mock network telemetry into the current agent state."""
-    return Command(update={
-        **MOCK_NETWORK_STATE,
-        "messages": [
-            ToolMessage(
-                "Mock network state loaded successfully",
-                tool_call_id=runtime.tool_call_id,
-            )
-        ]
-    })
 
 
 @tool
@@ -411,8 +377,6 @@ network_agent = create_agent(
     tools=[
         set_network_agent_state,
         get_network_agent_state,
-        get_mock_network_log,
-        load_mock_network_state,
         get_ip_reputation,
         detect_port_scan,
         detect_c2_beacon,
@@ -420,9 +384,10 @@ network_agent = create_agent(
     ],
     system_prompt=(
         "You are a network anomaly detection agent. You analyze network events for signs of compromise. "
-        "Use your tools to perform tasks. If the user asks for mock/demo data, call load_mock_network_state "
-        "before analysis."
+        "Use your tools to perform tasks based on real persisted telemetry context included in the prompt. "
+        "Return calculated, structured results only using the response schema."
     ),
+    response_format=NetworkAgentStructuredResponse,
     state_schema=NetworkAgentState,
     checkpointer=InMemorySaver()
 )
@@ -435,7 +400,20 @@ def invoke_network_agent(user_message: str, thread_id: str = "1"):
     config = {"configurable": {"thread_id": thread_id}}
     response = safe_invoke(
         network_agent,
-        {"messages": [HumanMessage(content=_mock_network_prompt(user_message) if "mock data mode" in user_message.lower() or "mock network state" in user_message.lower() else user_message)]},
+        {"messages": [HumanMessage(content=user_message)]},
+        config
+    )
+    return read(response)
+
+
+async def invoke_network_agent_async(user_message: str, thread_id: str = "1"):
+    """
+    Async variant that uses ainvoke so async tools can execute correctly.
+    """
+    config = {"configurable": {"thread_id": thread_id}}
+    response = await safe_ainvoke(
+        network_agent,
+        {"messages": [HumanMessage(content=user_message)]},
         config
     )
     return read(response)

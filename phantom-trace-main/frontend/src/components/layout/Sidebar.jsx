@@ -23,7 +23,6 @@ export function Sidebar() {
     { path: '/logs', label: 'Log Explorer', icon: List },
     { path: '/agents', label: 'Agent Monitor', icon: Cpu },
     { path: '/map', label: 'Threat Map', icon: Globe },
-    { path: '/mitre', label: 'MITRE ATT&CK', icon: ShieldAlert },
     { path: '/chat', label: 'AI Chat', icon: MessageSquare, badge: true, badgeLabel: 'AI' },
     { path: '/reports', label: 'Reports', icon: BarChart2 },
   ]

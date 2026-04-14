@@ -16,7 +16,6 @@ export function Topbar() {
     '/logs': 'Log Explorer',
     '/agents': 'Agent Monitor',
     '/map': 'Threat Map',
-    '/mitre': 'MITRE ATT&CK',
     '/chat': 'AI Chat',
     '/reports': 'Reports',
   }
