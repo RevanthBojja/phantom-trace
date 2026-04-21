@@ -1,11 +1,8 @@
 // ThreatSense — AgentPipeline
-// Visual representation of the agent processing pipeline
+// Visual representation of the live agent processing pipeline
 
-import { DUMMY_AGENT_STATUS } from '../../data/dummyData'
-
-export function AgentPipeline() {
-  const agentStatus = DUMMY_AGENT_STATUS
-  const processingAgent = agentStatus.find(a => a.status === 'processing')
+export function AgentPipeline({ agents = [], pipeline = null }) {
+  const processingAgent = agents.find((agent) => agent.status === 'processing')
 
   return (
     <div className="card mb-6">
@@ -36,7 +33,7 @@ export function AgentPipeline() {
 
           {/* Agents */}
           <div className="flex flex-col gap-3">
-            {agentStatus.map((agent) => (
+            {agents.map((agent) => (
               <div key={agent.key} className="text-center">
                 <div
                   className={`px-4 py-2 rounded-lg text-xs font-medium text-white transition-all ${
@@ -77,6 +74,12 @@ export function AgentPipeline() {
       {processingAgent && (
         <div className="mt-4 text-sm text-orange-DEFAULT font-semibold">
           🔄 {processingAgent.name} is currently processing...
+        </div>
+      )}
+
+      {!processingAgent && (
+        <div className="mt-4 text-sm text-brown-secondary font-medium">
+          Pipeline idle. Last completed stage: {pipeline?.stages?.[pipeline.stages.length - 1] || 'alert'}.
         </div>
       )}
     </div>

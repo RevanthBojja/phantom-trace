@@ -20,6 +20,7 @@ export default function Register() {
   })
   const [showPassword, setShowPassword] = useState(false)
   const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
 
   function handleChange(e) {
     setFormData({
@@ -30,13 +31,17 @@ export default function Register() {
 
   async function handleSubmit(e) {
     e.preventDefault()
+    setError('')
     setLoading(true)
 
-    setTimeout(() => {
-      register(formData)
-      setLoading(false)
+    try {
+      await register(formData)
       navigate('/api-key-setup')
-    }, 800)
+    } catch (err) {
+      setError(err.message || 'Unable to create account.')
+    } finally {
+      setLoading(false)
+    }
   }
 
   return (
@@ -186,6 +191,10 @@ export default function Register() {
             >
               {loading ? 'Creating account...' : 'Create Account'}
             </button>
+
+            {error && (
+              <p className="text-sm text-red-600 mt-3">{error}</p>
+            )}
           </form>
 
           {/* Login link */}

@@ -1,39 +1,56 @@
-// ThreatSense — Auth context
-// Simulates logged-in state with dummy client data
-// In production this would handle JWT tokens and real login API calls
-// For dummy version: isAuthenticated starts false so we can test login flow
-
-import { createContext, useContext, useState } from 'react'
-import { DUMMY_CLIENT } from '../data/dummyData'
+import { createContext, useContext, useEffect, useState } from 'react'
+import { apiJson, clearSession, getStoredSession, saveSession } from '../utils/apiClient'
 
 const AuthContext = createContext(null)
 
 export function AuthProvider({ children }) {
-  // Set to false to test login flow, true to skip straight to dashboard
   const [isAuthenticated, setIsAuthenticated] = useState(false)
   const [client, setClient] = useState(null)
+  const [isBootstrapping, setIsBootstrapping] = useState(true)
 
-  function login(email, password) {
-    // Dummy login — accept any credentials
-    // In production: POST /api/auth/login → get JWT → store in localStorage
-    setClient(DUMMY_CLIENT)
+  useEffect(() => {
+    const session = getStoredSession()
+    if (session.isAuthenticated && session.user) {
+      setClient(session.user)
+      setIsAuthenticated(true)
+    }
+    setIsBootstrapping(false)
+  }, [])
+
+  async function login(email, password) {
+    const payload = await apiJson('/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, password }),
+    })
+
+    saveSession(payload)
+    setClient(payload.user)
     setIsAuthenticated(true)
+    return payload
   }
 
-  function register(data) {
-    // Dummy register — always succeeds
-    // In production: POST /api/auth/register → get JWT + api_key
-    setClient({ ...DUMMY_CLIENT, ...data })
+  async function register(data) {
+    const payload = await apiJson('/auth/register', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    })
+
+    saveSession(payload)
+    setClient(payload.user)
     setIsAuthenticated(true)
+    return payload
   }
 
   function logout() {
+    clearSession()
     setClient(null)
     setIsAuthenticated(false)
   }
 
   return (
-    <AuthContext.Provider value={{ isAuthenticated, client, login, register, logout }}>
+    <AuthContext.Provider value={{ isAuthenticated, client, isBootstrapping, login, register, logout }}>
       {children}
     </AuthContext.Provider>
   )

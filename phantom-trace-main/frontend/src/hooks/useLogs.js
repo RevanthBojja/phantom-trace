@@ -2,6 +2,7 @@
 // Fetches raw logs from MongoDB backend for LogExplorer
 
 import { useState, useEffect } from 'react'
+import { apiJson } from '../utils/apiClient'
 
 export function useLogs(threadId = 'default') {
   const [logs, setLogs] = useState([])
@@ -14,13 +15,7 @@ export function useLogs(threadId = 'default') {
         setLoading(true)
         setError(null)
 
-        const response = await fetch(
-          `http://localhost:8000/api/logs?thread_id=${threadId}&limit=100`
-        )
-        if (!response.ok) {
-          throw new Error(`Failed to fetch logs: ${response.statusText}`)
-        }
-        const data = await response.json()
+        const data = await apiJson(`/api/logs?thread_id=${threadId}&limit=100`)
         setLogs(data.logs || [])
 
       } catch (err) {

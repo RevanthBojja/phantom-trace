@@ -19,7 +19,7 @@ export function Sidebar() {
 
   const navItems = [
     { path: '/', label: 'Dashboard', icon: LayoutDashboard },
-    { path: '/', label: 'Live Alerts', icon: Bell, badge: true },
+    { path: '/live-alerts', label: 'Live Alerts', icon: Bell, badge: true },
     { path: '/logs', label: 'Log Explorer', icon: List },
     { path: '/agents', label: 'Agent Monitor', icon: Cpu },
     { path: '/map', label: 'Threat Map', icon: Globe },
@@ -98,12 +98,19 @@ export function Sidebar() {
 
       {/* Bottom section */}
       <div className="px-3 py-4 border-t border-[#3D2418] space-y-2">
-        <button
-          className="flex items-center gap-3 px-4 py-2.5 rounded-lg w-full text-cream hover:bg-[#3D2418] transition-colors"
+        <Link
+          to="/settings"
+          onClick={() => setMobileOpen(false)}
+          className={clsx(
+            'flex items-center gap-3 px-4 py-2.5 rounded-lg w-full transition-colors',
+            isActive('/settings')
+              ? 'bg-[#3D2418] text-cream border-l-3 border-l-orange-DEFAULT'
+              : 'text-cream hover:bg-[#3D2418]'
+          )}
         >
           <Settings className="w-5 h-5" />
           <span className="text-sm font-medium">Settings</span>
-        </button>
+        </Link>
 
         <button
           onClick={logout}

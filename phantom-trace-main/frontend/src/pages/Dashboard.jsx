@@ -7,7 +7,6 @@ import { motion } from 'framer-motion'
 import { AlertTriangle, AlertOctagon, Activity, Cpu } from 'lucide-react'
 import { useAuth } from '../hooks/useAuth'
 import { useAlerts } from '../hooks/useAlerts'
-import { DUMMY_STATS } from '../data/dummyData'
 import { AlertFeed } from '../components/alerts/AlertFeed'
 import { SeverityGauge } from '../components/charts/SeverityGauge'
 import { AlertsOverTime } from '../components/charts/AlertsOverTime'
@@ -19,9 +18,10 @@ export default function Dashboard() {
   // Fetch alerts from MongoDB backend
   const { alerts, loading, error, summary } = useAlerts('default')
 
-  // Use real data from MongoDB if available, otherwise fall back to dummy data
-  const counts = summary?.counts || DUMMY_STATS.counts
-  const logsToday = summary?.logs_today || DUMMY_STATS.logs_today
+  const counts = summary?.counts || { critical: 0, high: 0, medium: 0, low: 0 }
+  const logsToday = summary?.logs_today || 0
+  const activeAgents = summary?.agents_active || 0
+  const knownAgents = 5
 
   const statCards = [
     {
@@ -53,12 +53,12 @@ export default function Dashboard() {
     },
     {
       title: 'Agents Active',
-      count: '5/5',
+      count: `${activeAgents}/${knownAgents}`,
       icon: Cpu,
       color: 'bg-green-100',
       textColor: 'text-green-600',
-      trend: 'All systems operational',
-      trendColor: 'text-green-600',
+      trend: activeAgents === knownAgents ? 'All systems operational' : 'Waiting for agent telemetry',
+      trendColor: activeAgents === knownAgents ? 'text-green-600' : 'text-amber-600',
     },
   ]
 

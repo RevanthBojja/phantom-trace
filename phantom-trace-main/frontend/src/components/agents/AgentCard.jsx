@@ -6,13 +6,15 @@ import { timeAgo } from '../../utils/helpers'
 
 export function AgentCard({ agent }) {
   const agentColors = {
-    network_agent: { icon: 'bg-blue-100', text: 'text-blue-700', dot: 'bg-blue-500' },
-    auth_agent: { icon: 'bg-orange-100', text: 'text-orange-700', dot: 'bg-orange-500' },
-    malware_agent: { icon: 'bg-red-100', text: 'text-red-700', dot: 'bg-red-500' },
-    behavioral_agent: { icon: 'bg-teal-100', text: 'text-teal-700', dot: 'bg-teal-500' },
+    network: { icon: 'bg-blue-100', text: 'text-blue-700', dot: 'bg-blue-500' },
+    auth: { icon: 'bg-orange-100', text: 'text-orange-700', dot: 'bg-orange-500' },
+    behavioural: { icon: 'bg-teal-100', text: 'text-teal-700', dot: 'bg-teal-500' },
+    orchestrator: { icon: 'bg-purple-100', text: 'text-purple-700', dot: 'bg-purple-500' },
+    explainer: { icon: 'bg-emerald-100', text: 'text-emerald-700', dot: 'bg-emerald-500' },
   }
 
-  const colors = agentColors[agent.key] || agentColors.network_agent
+  const colors = agentColors[agent.key] || agentColors.network
+  const confidence = typeof agent.avg_confidence === 'number' ? agent.avg_confidence : 0
 
   return (
     <motion.div
@@ -28,17 +30,24 @@ export function AgentCard({ agent }) {
           </div>
           {agent.name}
         </h4>
-        <span
-          className={`text-xs font-semibold px-2 py-1 rounded-full ${
-            agent.status === 'processing'
-              ? 'bg-orange-50 text-orange-600 animate-pulse'
-              : agent.status === 'idle'
-              ? 'bg-green-50 text-green-600'
-              : 'bg-gray-50 text-gray-600'
-          }`}
-        >
-          {agent.status === 'processing' ? '🔄 Processing' : agent.status === 'idle' ? '✓ Idle' : agent.status}
-        </span>
+        <div className="flex flex-col items-end gap-1">
+          <span
+            className={`text-xs font-semibold px-2 py-1 rounded-full ${
+              agent.status === 'processing'
+                ? 'bg-orange-50 text-orange-600 animate-pulse'
+                : agent.status === 'idle'
+                ? 'bg-green-50 text-green-600'
+                : agent.status === 'offline'
+                ? 'bg-gray-100 text-gray-600'
+                : 'bg-gray-50 text-gray-600'
+            }`}
+          >
+            {agent.status === 'processing' ? 'Processing' : agent.status === 'idle' ? 'Idle' : agent.status === 'offline' ? 'Offline' : agent.status}
+          </span>
+          <span className="text-[10px] uppercase tracking-wide text-brown-secondary">
+            {agent.data_source === 'event-inferred' ? 'telemetry inferred' : agent.data_source === 'agent-results' ? 'runtime data' : 'no data'}
+          </span>
+        </div>
       </div>
 
       {/* Stats row */}
@@ -50,7 +59,7 @@ export function AgentCard({ agent }) {
         <div>
           <p className="text-brown-secondary text-xs mb-1">Avg Confidence</p>
           <p className="font-bold text-brown-primary text-lg">
-            {(agent.avg_confidence * 100).toFixed(0)}%
+            {(confidence * 100).toFixed(0)}%
           </p>
         </div>
       </div>
@@ -59,7 +68,7 @@ export function AgentCard({ agent }) {
       <div className="mb-3">
         <p className="text-xs text-brown-secondary mb-2">Top Anomaly Flag</p>
         <span className="text-xs bg-orange-tint text-orange-700 border border-orange-200 px-2 py-1 rounded inline-block">
-          {agent.top_flag.replace(/_/g, ' ')}
+          {(agent.top_flag || 'monitoring').replace(/_/g, ' ')}
         </span>
       </div>
 
@@ -68,7 +77,7 @@ export function AgentCard({ agent }) {
         <div className="w-full h-2 bg-border rounded-full overflow-hidden">
           <motion.div
             initial={{ width: 0 }}
-            animate={{ width: `${agent.avg_confidence * 100}%` }}
+            animate={{ width: `${confidence * 100}%` }}
             transition={{ duration: 1, ease: 'easeOut' }}
             className="h-full bg-orange-DEFAULT"
           ></motion.div>

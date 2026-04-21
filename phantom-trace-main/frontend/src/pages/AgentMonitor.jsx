@@ -6,12 +6,14 @@ import { motion } from 'framer-motion'
 import { useAgents } from '../hooks/useAgents'
 import { AgentPipeline } from '../components/agents/AgentPipeline'
 import { AgentCard } from '../components/agents/AgentCard'
+import { timeAgo } from '../utils/helpers'
 
 export default function AgentMonitor() {
-  const { agents, loading, error } = useAgents('default')
+  const { agents, overview, pipeline, loading, error } = useAgents('default')
   const [findingFilter, setFindingFilter] = useState('All')
 
-  const findingTabs = ['All', 'Network', 'Auth', 'Behavioral']
+  const findingTabs = ['All', 'Network', 'Auth', 'Behavioural', 'Orchestrator', 'Explainer']
+  const processingAgent = agents.find((agent) => agent.status === 'processing')
 
   return (
     <div>
@@ -38,8 +40,43 @@ export default function AgentMonitor() {
 
       {!loading && !error && (
         <>
+          <motion.div
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6"
+          >
+            <div className="card">
+              <p className="text-brown-secondary text-xs mb-1">Active Agents</p>
+              <p className="text-2xl font-bold text-brown-primary">{overview?.active_agents ?? 0}</p>
+            </div>
+            <div className="card">
+              <p className="text-brown-secondary text-xs mb-1">Processing Now</p>
+              <p className="text-2xl font-bold text-orange-DEFAULT">{overview?.processing_agents ?? 0}</p>
+            </div>
+            <div className="card">
+              <p className="text-brown-secondary text-xs mb-1">Findings Today</p>
+              <p className="text-2xl font-bold text-brown-primary">{overview?.total_findings_today ?? 0}</p>
+            </div>
+            <div className="card">
+              <p className="text-brown-secondary text-xs mb-1">Avg Confidence</p>
+              <p className="text-2xl font-bold text-brown-primary">
+                {Math.round((overview?.avg_confidence ?? 0) * 100)}%
+              </p>
+            </div>
+          </motion.div>
+
           <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
-            <AgentPipeline />
+            <AgentPipeline agents={agents} pipeline={pipeline} />
+          </motion.div>
+
+          <motion.div
+            initial={{ opacity: 0, y: 8 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="mb-3 text-sm text-brown-secondary"
+          >
+            {processingAgent
+              ? `${processingAgent.name} is currently processing live telemetry.`
+              : `Pipeline is idle. Last update: ${overview?.last_pipeline_update ? timeAgo(overview.last_pipeline_update) : 'never'}.`}
           </motion.div>
 
           <motion.div
@@ -89,7 +126,7 @@ export default function AgentMonitor() {
 
               <div className="space-y-3">
                 {agents
-                  .filter((agent) => findingFilter === 'All' || agent.name.includes(findingFilter))
+                  .filter((agent) => findingFilter === 'All' || agent.name.toLowerCase().includes(findingFilter.toLowerCase()))
                   .flatMap((agent) =>
                     (agent.recent_findings || []).slice(0, 2).map((finding, idx) => ({
                       agent,
@@ -112,12 +149,18 @@ export default function AgentMonitor() {
                       </div>
                       <div className="flex items-center gap-4 shrink-0">
                         <span className="text-xs font-mono text-brown-secondary">
-                          {(agent.avg_confidence * 100).toFixed(0)}%
+                          {(Math.max(0, Number(agent.avg_confidence || 0)) * 100).toFixed(0)}%
                         </span>
                         <span className="text-xs text-brown-secondary">{agent.status}</span>
                       </div>
                     </div>
                   ))}
+
+                {agents
+                  .filter((agent) => findingFilter === 'All' || agent.name.toLowerCase().includes(findingFilter.toLowerCase()))
+                  .every((agent) => (agent.recent_findings || []).length === 0) && (
+                  <p className="text-sm text-brown-secondary py-3">No recent findings for the selected filter.</p>
+                )}
               </div>
             </div>
           </motion.div>

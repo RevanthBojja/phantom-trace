@@ -140,6 +140,17 @@ def initialize_collections() -> None:
     sessions.create_index([("thread_id", ASCENDING)])
     sessions.create_index([("created_at", DESCENDING)])
 
+    # 6. Auth Collection
+    if "auth" not in collections:
+        db.create_collection("auth")
+        print("✓ Created collection: auth")
+
+    auth = db["auth"]
+    auth.create_index([("email", ASCENDING)], unique=True)
+    auth.create_index([("api_key_prefix", ASCENDING)])
+    auth.create_index([("api_keys.api_key_prefix", ASCENDING)])
+    auth.create_index([("created_at", DESCENDING)])
+
 
 # ==================== AGENT RESULTS OPERATIONS ====================
 

@@ -1,14 +1,26 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
-from typing import Any, Dict, List, Literal
-from datetime import datetime
+from typing import Any, Dict, List, Literal, Optional
+from datetime import datetime, timedelta, timezone
+import ipaddress
 import uvicorn
-from network_agent import invoke_network_agent, invoke_network_agent_async
+from network_agent import invoke_network_agent_async
 from auth_agent import invoke_auth_agent
 from behavioural_agent import invoke_behavioural_agent
 from orchestrator_agent import invoke_orchestrator_agent
 from explainer_agent import invoke_explainer_agent
+from auth_service import (
+    AuthError,
+    create_user_api_key,
+    delete_user_api_key,
+    get_authenticated_user,
+    get_user_api_keys,
+    get_me_payload,
+    login_user,
+    register_user,
+)
 from agent_result_cache import (
     infer_flags_from_agent_response,
     parse_agent_response,
@@ -139,6 +151,80 @@ class LatestEventResponse(BaseModel):
     event: Dict[str, Any] | None
 
 
+class RegisterRequest(BaseModel):
+    name: str
+    email: str
+    password: str
+    website_name: str = ""
+    website_url: str = ""
+
+
+class LoginRequest(BaseModel):
+    email: str
+    password: str
+
+
+class AuthResponse(BaseModel):
+    status: str
+    access_token: str
+    token_type: str
+    api_key: Optional[str] = None
+    user: Dict[str, Any]
+
+
+class MeResponse(BaseModel):
+    status: str
+    user: Dict[str, Any]
+
+
+class ApiKeyRecord(BaseModel):
+    id: str
+    hint: str
+    api_key: Optional[str] = None
+    created_at: Optional[str] = None
+    last_used_at: Optional[str] = None
+
+
+class ApiKeysListResponse(BaseModel):
+    status: str
+    api_keys: List[ApiKeyRecord]
+
+
+class ApiKeyCreateResponse(BaseModel):
+    status: str
+    api_key: str
+    api_key_record: ApiKeyRecord
+
+
+class ApiKeyDeleteResponse(BaseModel):
+    status: str
+    deleted: bool
+
+
+security_scheme = HTTPBearer(auto_error=False)
+
+
+def _to_http_exception(error: AuthError) -> HTTPException:
+    return HTTPException(status_code=error.status_code, detail=error.message)
+
+
+def _extract_bearer_token(credentials: Optional[HTTPAuthorizationCredentials]) -> Optional[str]:
+    if credentials and credentials.scheme and credentials.scheme.lower() == "bearer":
+        return credentials.credentials
+    return None
+
+
+def require_authenticated_user(
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security_scheme),
+    api_key: Optional[str] = Header(default=None, alias="x-api-key"),
+) -> Dict[str, Any]:
+    try:
+        bearer_token = _extract_bearer_token(credentials)
+        return get_authenticated_user(bearer_token=bearer_token, api_key=api_key)
+    except AuthError as error:
+        raise _to_http_exception(error)
+
+
 def _to_json_safe(value: Any) -> Any:
     if isinstance(value, datetime):
         return value.isoformat()
@@ -149,6 +235,144 @@ def _to_json_safe(value: Any) -> Any:
     if isinstance(value, list):
         return [_to_json_safe(v) for v in value]
     return value
+
+
+SEVERITY_SCORE_MAP = {
+    "CRITICAL": 9.0,
+    "HIGH": 7.0,
+    "MEDIUM": 5.0,
+    "LOW": 2.5,
+}
+
+AGENT_NAME_ALIASES = {
+    "network": "network",
+    "network_agent": "network",
+    "auth": "auth",
+    "auth_agent": "auth",
+    "behavioural": "behavioural",
+    "behavioural_agent": "behavioural",
+    "behavioral": "behavioural",
+    "behavioral_agent": "behavioural",
+    "orchestrator": "orchestrator",
+    "orchestrator_agent": "orchestrator",
+    "explainer": "explainer",
+    "explainer_agent": "explainer",
+}
+
+AGENT_DISPLAY_NAMES = {
+    "network": "Network Agent",
+    "auth": "Auth Agent",
+    "behavioural": "Behavioural Agent",
+    "orchestrator": "Orchestrator Agent",
+    "explainer": "Explainer Agent",
+}
+
+GEO_IP_PREFIX_COUNTRY = {
+    "185.220.101.45": "Russia",
+    "45.142.212.100": "Ukraine",
+    "194.165.16.15": "Germany",
+    "8.8.8.8": "United States",
+    "1.1.1.1": "Australia",
+}
+
+COUNTRY_COORDINATES = {
+    "Russia": {"lat": 61.5240, "lng": 105.3188},
+    "Ukraine": {"lat": 48.3794, "lng": 31.1656},
+    "Germany": {"lat": 51.1657, "lng": 10.4515},
+    "United States": {"lat": 39.7837, "lng": -100.4459},
+    "Australia": {"lat": -25.2744, "lng": 133.7751},
+    "Internal": {"lat": 0.0, "lng": 0.0},
+    "Unknown": {"lat": 20.0, "lng": 0.0},
+}
+
+
+def _normalize_agent_name(agent_name: str) -> Optional[str]:
+    if not agent_name:
+        return None
+    return AGENT_NAME_ALIASES.get(agent_name.strip().lower())
+
+
+def _severity_to_score(severity_label: str) -> float:
+    return SEVERITY_SCORE_MAP.get((severity_label or "MEDIUM").upper(), SEVERITY_SCORE_MAP["MEDIUM"])
+
+
+def _score_to_severity(score: float) -> str:
+    if score >= 8.5:
+        return "CRITICAL"
+    if score >= 6.5:
+        return "HIGH"
+    if score >= 4.0:
+        return "MEDIUM"
+    return "LOW"
+
+
+def _classification_for_log_type(log_type: str) -> str:
+    classification_map = {
+        "network": "Network Anomaly",
+        "auth": "Authentication Anomaly",
+        "process": "Process Anomaly",
+        "dns": "DNS Anomaly",
+        "behavioral": "Behavioral Anomaly",
+        "behavioural": "Behavioral Anomaly",
+    }
+    return classification_map.get((log_type or "").lower(), "Security Event")
+
+
+def _country_from_ip(source_ip: str, payload: Dict[str, Any]) -> str:
+    explicit_country = payload.get("country") or payload.get("geo_country")
+    if explicit_country:
+        return str(explicit_country)
+
+    for ip_prefix, inferred_country in GEO_IP_PREFIX_COUNTRY.items():
+        if source_ip.startswith(ip_prefix):
+            return inferred_country
+
+    try:
+        parsed_ip = ipaddress.ip_address(source_ip)
+        if parsed_ip.is_private:
+            return "Internal"
+    except ValueError:
+        pass
+
+    return "Unknown"
+
+
+def _coordinates_for_country(country: str) -> Dict[str, float]:
+    return COUNTRY_COORDINATES.get(country, COUNTRY_COORDINATES["Unknown"])
+
+
+def _event_to_alert(event: Dict[str, Any], alert_id: str, thread_id: str) -> Dict[str, Any]:
+    payload = event.get("event_payload", {})
+    severity_label = str(payload.get("severity", "MEDIUM")).upper()
+    severity_score = _severity_to_score(severity_label)
+    log_type = event.get("log_type", "unknown")
+
+    affected_entities = []
+    for field in ("user_id", "source_ip", "destination_ip", "process_name", "query"):
+        field_value = payload.get(field)
+        if field_value:
+            affected_entities.append(str(field_value))
+
+    return {
+        "_id": alert_id,
+        "thread_id": thread_id,
+        "severity_label": severity_label,
+        "severity_score": severity_score,
+        "attack_classification": _classification_for_log_type(log_type),
+        "attack_narrative": f"Detected {log_type} anomaly in threat event from {event.get('log_source', 'unknown')} source.",
+        "event_payload": payload,
+        "mitre_techniques": [],
+        "recommended_actions": [],
+        "affected_entities": affected_entities,
+        "timeline": [{
+            "timestamp": _to_json_safe(event.get("created_at")),
+            "event": f"{str(log_type).upper()} event detected",
+            "agent_source": "Security System",
+        }],
+        "acknowledged": False,
+        "created_at": _to_json_safe(event.get("created_at")),
+        "source_event_id": str(event.get("_id", "")),
+    }
 
 
 def _thinking_steps_for_agent(agent: str) -> List[str]:
@@ -243,8 +467,86 @@ async def health():
         }
 
 
+@app.post("/auth/register", response_model=AuthResponse)
+async def register(request: RegisterRequest):
+    """Register a user, issue a JWT, and return a provisioned API key."""
+    try:
+        payload = register_user(
+            name=request.name,
+            email=request.email,
+            password=request.password,
+            website_name=request.website_name,
+            website_url=request.website_url,
+        )
+        return AuthResponse(**payload)
+    except AuthError as error:
+        raise _to_http_exception(error)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error creating account: {str(e)}")
+
+
+@app.post("/auth/login", response_model=AuthResponse)
+async def login(request: LoginRequest):
+    """Authenticate a user and return a JWT for API access."""
+    try:
+        payload = login_user(email=request.email, password=request.password)
+        return AuthResponse(**payload)
+    except AuthError as error:
+        raise _to_http_exception(error)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error during login: {str(e)}")
+
+
+@app.get("/auth/me", response_model=MeResponse)
+async def me(current_user: Dict[str, Any] = Depends(require_authenticated_user)):
+    """Return profile metadata for the currently authenticated user."""
+    return MeResponse(**get_me_payload(current_user))
+
+
+@app.get("/auth/api-keys", response_model=ApiKeysListResponse)
+async def list_api_keys(current_user: Dict[str, Any] = Depends(require_authenticated_user)):
+    """Return all active API keys for the authenticated user."""
+    try:
+        payload = get_user_api_keys(current_user)
+        return ApiKeysListResponse(**payload)
+    except AuthError as error:
+        raise _to_http_exception(error)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error loading API keys: {str(e)}")
+
+
+@app.post("/auth/api-keys", response_model=ApiKeyCreateResponse)
+async def create_api_key(current_user: Dict[str, Any] = Depends(require_authenticated_user)):
+    """Create a new API key for the authenticated user."""
+    try:
+        payload = create_user_api_key(current_user)
+        return ApiKeyCreateResponse(**payload)
+    except AuthError as error:
+        raise _to_http_exception(error)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error creating API key: {str(e)}")
+
+
+@app.delete("/auth/api-keys/{key_id}", response_model=ApiKeyDeleteResponse)
+async def delete_api_key(
+    key_id: str,
+    current_user: Dict[str, Any] = Depends(require_authenticated_user),
+):
+    """Delete an API key for the authenticated user."""
+    try:
+        payload = delete_user_api_key(current_user, key_id)
+        return ApiKeyDeleteResponse(**payload)
+    except AuthError as error:
+        raise _to_http_exception(error)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error deleting API key: {str(e)}")
+
+
 @app.post("/events/ingest", response_model=EventIngestResponse)
-async def ingest_event(request: EventIngestRequest):
+async def ingest_event(
+    request: EventIngestRequest,
+    current_user: Dict[str, Any] = Depends(require_authenticated_user),
+):
     """Persist raw threat telemetry in SQLite for downstream specialist analysis."""
     try:
         if not request.log_source.strip() or not request.log_type.strip():
@@ -268,7 +570,10 @@ async def ingest_event(request: EventIngestRequest):
 
 
 @app.get("/events/latest/{thread_id}", response_model=LatestEventResponse)
-async def get_latest_event(thread_id: str):
+async def get_latest_event(
+    thread_id: str,
+    current_user: Dict[str, Any] = Depends(require_authenticated_user),
+):
     """Fetch the latest stored event for a thread."""
     try:
         event = get_latest_threat_event(thread_id)
@@ -278,7 +583,10 @@ async def get_latest_event(thread_id: str):
 
 
 @app.post("/chat", response_model=UnifiedChatResponse)
-async def unified_chat(request: UnifiedChatRequest):
+async def unified_chat(
+    request: UnifiedChatRequest,
+    current_user: Dict[str, Any] = Depends(require_authenticated_user),
+):
     """
     Unified chat endpoint that routes messages to a selected backend agent.
 
@@ -319,7 +627,10 @@ async def unified_chat(request: UnifiedChatRequest):
 
 
 @app.post("/call-networkAgent", response_model=NetworkAgentResponse)
-async def call_network_agent(request: NetworkAgentRequest):
+async def call_network_agent(
+    request: NetworkAgentRequest,
+    current_user: Dict[str, Any] = Depends(require_authenticated_user),
+):
     """
     Endpoint to call the network agent with a message.
     
@@ -357,7 +668,10 @@ async def call_network_agent(request: NetworkAgentRequest):
 
 
 @app.post("/call-authAgent", response_model=AuthAgentResponse)
-async def call_auth_agent(request: AuthAgentRequest):
+async def call_auth_agent(
+    request: AuthAgentRequest,
+    current_user: Dict[str, Any] = Depends(require_authenticated_user),
+):
     """
     Endpoint to call the authentication agent with a message.
 
@@ -395,7 +709,10 @@ async def call_auth_agent(request: AuthAgentRequest):
 
 
 @app.post("/call-behaviouralAgent", response_model=BehaviouralAgentResponse)
-async def call_behavioural_agent(request: BehaviouralAgentRequest):
+async def call_behavioural_agent(
+    request: BehaviouralAgentRequest,
+    current_user: Dict[str, Any] = Depends(require_authenticated_user),
+):
     """
     Endpoint to call the behavioural agent with a message.
 
@@ -433,7 +750,10 @@ async def call_behavioural_agent(request: BehaviouralAgentRequest):
 
 
 @app.post("/call-orchestratorAgent", response_model=OrchestratorAgentResponse)
-async def call_orchestrator_agent(request: OrchestratorAgentRequest):
+async def call_orchestrator_agent(
+    request: OrchestratorAgentRequest,
+    current_user: Dict[str, Any] = Depends(require_authenticated_user),
+):
     """
     Endpoint to call the orchestrator agent with a message.
 
@@ -471,7 +791,10 @@ async def call_orchestrator_agent(request: OrchestratorAgentRequest):
 
 
 @app.post("/call-explainerAgent", response_model=ExplainerAgentResponse)
-async def call_explainer_agent(request: ExplainerAgentRequest):
+async def call_explainer_agent(
+    request: ExplainerAgentRequest,
+    current_user: Dict[str, Any] = Depends(require_authenticated_user),
+):
     """
     Endpoint to call the explainer agent with a message.
 
@@ -512,7 +835,11 @@ from mongodb_db import MongoDBConnection
 
 
 @app.get("/api/alerts")
-async def get_alerts(thread_id: str = "default", limit: int = 100):
+async def get_alerts(
+    thread_id: str = "default",
+    limit: int = 100,
+    current_user: Dict[str, Any] = Depends(require_authenticated_user),
+):
     """
     Fetch threat events for a thread and convert to alert format for frontend.
     
@@ -537,51 +864,10 @@ async def get_alerts(thread_id: str = "default", limit: int = 100):
         
         # Convert threat events to alert format
         alerts = []
-        severity_map = {
-            "CRITICAL": 9.0,
-            "HIGH": 7.0,
-            "MEDIUM": 5.0,
-            "LOW": 2.5
-        }
-        
+
         event_id_counter = 1
         for event in threat_events:
-            severity_label = event.get("event_payload", {}).get("severity", "MEDIUM")
-            severity_score = severity_map.get(severity_label, 5.0)
-            
-            # Determine attack classification based on log_type
-            log_type = event.get("log_type", "unknown")
-            classification_map = {
-                "network": "Network Anomaly",
-                "auth": "Authentication Anomaly",
-                "process": "Process Anomaly",
-                "dns": "DNS Anomaly",
-                "behavioral": "Behavioral Anomaly"
-            }
-            attack_classification = classification_map.get(log_type, "Security Event")
-            
-            alert = {
-                "_id": f"alert_{event_id_counter}",
-                "thread_id": thread_id,
-                "severity_label": severity_label,
-                "severity_score": severity_score,
-                "attack_classification": attack_classification,
-                "attack_narrative": f"Detected {log_type} anomaly in threat event from {event.get('log_source', 'unknown')} source.",
-                "event_payload": event.get("event_payload", {}),
-                "mitre_techniques": [],
-                "recommended_actions": [],
-                "affected_entities": [],
-                "timeline": [{
-                    "timestamp": _to_json_safe(event.get("created_at")),
-                    "event": f"{log_type.upper()} event detected",
-                    "agent_source": "Security System"
-                }],
-                "acknowledged": False,
-                "created_at": _to_json_safe(event.get("created_at")),
-                "source_event_id": str(event.get("_id", ""))
-            }
-            
-            alerts.append(alert)
+            alerts.append(_event_to_alert(event=event, alert_id=f"alert_{event_id_counter}", thread_id=thread_id))
             event_id_counter += 1
         
         # Also include recent agent findings as alerts
@@ -592,18 +878,15 @@ async def get_alerts(thread_id: str = "default", limit: int = 100):
             summary = parsed_response.get("summary", "Finding generated")
             
             # Calculate severity from findings
-            severity_score = 5.0
+            severity_score = _severity_to_score("MEDIUM")
             if "critical" in summary.lower():
-                severity_score = 9.0
+                severity_score = _severity_to_score("CRITICAL")
             elif "high" in summary.lower():
-                severity_score = 7.0
-            elif "medium" in summary.lower():
-                severity_score = 5.0
+                severity_score = _severity_to_score("HIGH")
             elif "low" in summary.lower():
-                severity_score = 2.5
-            
-            severity_labels = ["LOW", "MEDIUM", "HIGH", "CRITICAL"]
-            severity_label = severity_labels[min(int(severity_score / 2.5) - 1, 3)]
+                severity_score = _severity_to_score("LOW")
+
+            severity_label = _score_to_severity(severity_score)
             
             agent_finding = {
                 "_id": f"finding_{finding_id_counter}",
@@ -643,7 +926,10 @@ async def get_alerts(thread_id: str = "default", limit: int = 100):
 
 
 @app.get("/api/alerts/summary")
-async def get_alerts_summary(thread_id: str = "default"):
+async def get_alerts_summary(
+    thread_id: str = "default",
+    current_user: Dict[str, Any] = Depends(require_authenticated_user),
+):
     """
     Get summary statistics for alerts on the dashboard.
     
@@ -653,17 +939,10 @@ async def get_alerts_summary(thread_id: str = "default"):
     try:
         db = MongoDBConnection.get_database()
         
-        # Count threat events by severity
-        severity_map = {
-            "CRITICAL": 9.0,
-            "HIGH": 7.0,
-            "MEDIUM": 5.0,
-            "LOW": 2.5
-        }
-        
         threat_events = list(db["threat_events"].find({"thread_id": thread_id}))
-        
+
         severity_counts = {"critical": 0, "high": 0, "medium": 0, "low": 0}
+        total_score = 0.0
         for event in threat_events:
             severity_label = event.get("event_payload", {}).get("severity", "MEDIUM").upper()
             if severity_label == "CRITICAL":
@@ -674,6 +953,7 @@ async def get_alerts_summary(thread_id: str = "default"):
                 severity_counts["medium"] += 1
             else:
                 severity_counts["low"] += 1
+            total_score += _severity_to_score(severity_label)
         
         # Count by log type
         alerts_by_type = {}
@@ -685,14 +965,28 @@ async def get_alerts_summary(thread_id: str = "default"):
             {"type": k.replace("_", " ").title(), "count": v}
             for k, v in sorted(alerts_by_type.items(), key=lambda x: x[1], reverse=True)
         ]
+
+        start_of_today = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+        logs_today = db["threat_events"].count_documents({
+            "thread_id": thread_id,
+            "created_at": {"$gte": start_of_today},
+        })
+
+        distinct_agent_names = db["agent_results"].distinct("agent_name", {"thread_id": thread_id})
+        active_agents = {
+            normalized for normalized in (_normalize_agent_name(name) for name in distinct_agent_names) if normalized
+        }
+
+        avg_severity = round(total_score / max(1, len(threat_events)), 2)
         
         return {
             "status": "success",
             "thread_id": thread_id,
             "counts": severity_counts,
             "total_events": len(threat_events),
-            "logs_today": len(threat_events),
-            "agents_active": 5,
+            "logs_today": logs_today,
+            "agents_active": len(active_agents),
+            "avg_severity": avg_severity,
             "alerts_by_type": alerts_by_type_list
         }
     
@@ -701,7 +995,11 @@ async def get_alerts_summary(thread_id: str = "default"):
 
 
 @app.get("/api/logs")
-async def get_logs(thread_id: str = "default", limit: int = 100):
+async def get_logs(
+    thread_id: str = "default",
+    limit: int = 100,
+    current_user: Dict[str, Any] = Depends(require_authenticated_user),
+):
     """
     Fetch threat events formatted as logs for the LogExplorer page.
     
@@ -749,71 +1047,441 @@ async def get_logs(thread_id: str = "default", limit: int = 100):
         raise HTTPException(status_code=500, detail=f"Error fetching logs: {str(e)}")
 
 
+@app.get("/api/reports")
+async def get_reports(
+    thread_id: str = "default",
+    current_user: Dict[str, Any] = Depends(require_authenticated_user),
+):
+    """Compute reports page statistics directly from MongoDB threat and agent collections."""
+    try:
+        db = MongoDBConnection.get_database()
+
+        threat_events = list(db["threat_events"].find({"thread_id": thread_id}).sort("created_at", -1))
+        agent_results = list(db["agent_results"].find({"thread_id": thread_id}))
+
+        severity_counts = {"critical": 0, "high": 0, "medium": 0, "low": 0}
+        alerts_by_type: Dict[str, int] = {}
+        users: Dict[str, Dict[str, Any]] = {}
+        source_ips: Dict[str, Dict[str, Any]] = {}
+        total_severity_score = 0.0
+
+        top_critical_alerts = []
+        for idx, event in enumerate(threat_events, start=1):
+            payload = event.get("event_payload", {})
+            severity_label = str(payload.get("severity", "MEDIUM")).upper()
+            severity_score = _severity_to_score(severity_label)
+            total_severity_score += severity_score
+
+            if severity_label == "CRITICAL":
+                severity_counts["critical"] += 1
+            elif severity_label == "HIGH":
+                severity_counts["high"] += 1
+            elif severity_label == "MEDIUM":
+                severity_counts["medium"] += 1
+            else:
+                severity_counts["low"] += 1
+
+            log_type = str(event.get("log_type", "unknown")).lower()
+            alerts_by_type[log_type] = alerts_by_type.get(log_type, 0) + 1
+
+            user_id = payload.get("user_id")
+            if user_id:
+                existing_user = users.get(user_id)
+                if existing_user is None:
+                    users[user_id] = {
+                        "id": str(user_id),
+                        "alerts": 1,
+                        "lastSeen": _to_json_safe(event.get("created_at")),
+                        "riskScore": severity_score,
+                    }
+                else:
+                    existing_user["alerts"] += 1
+                    if severity_score > existing_user["riskScore"]:
+                        existing_user["riskScore"] = severity_score
+
+            source_ip = payload.get("source_ip")
+            if source_ip:
+                existing_ip = source_ips.get(source_ip)
+                if existing_ip is None:
+                    source_ips[source_ip] = {
+                        "ip": str(source_ip),
+                        "country": _country_from_ip(str(source_ip), payload),
+                        "alerts": 1,
+                        "severityScore": severity_score,
+                    }
+                else:
+                    existing_ip["alerts"] += 1
+                    if severity_score > existing_ip["severityScore"]:
+                        existing_ip["severityScore"] = severity_score
+
+            if severity_label == "CRITICAL":
+                top_critical_alerts.append(_event_to_alert(event=event, alert_id=f"alert_{idx}", thread_id=thread_id))
+
+        if not top_critical_alerts and threat_events:
+            # Fall back to highest severity events when no CRITICAL events exist.
+            sorted_events = sorted(
+                threat_events,
+                key=lambda e: _severity_to_score(str(e.get("event_payload", {}).get("severity", "MEDIUM"))),
+                reverse=True,
+            )
+            top_critical_alerts = [
+                _event_to_alert(event=event, alert_id=f"alert_{idx+1}", thread_id=thread_id)
+                for idx, event in enumerate(sorted_events[:3])
+            ]
+
+        agent_stats: Dict[str, Dict[str, Any]] = {}
+        for result in agent_results:
+            normalized_agent = _normalize_agent_name(str(result.get("agent_name", "")))
+            if not normalized_agent:
+                continue
+
+            stats = agent_stats.setdefault(
+                normalized_agent,
+                {
+                    "agent": normalized_agent,
+                    "name": AGENT_DISPLAY_NAMES.get(normalized_agent, normalized_agent.title()),
+                    "findings": 0,
+                },
+            )
+            stats["findings"] += 1
+
+        reports_agents = sorted(agent_stats.values(), key=lambda item: item["findings"], reverse=True)
+
+        sorted_users = sorted(users.values(), key=lambda item: (item["alerts"], item["riskScore"]), reverse=True)[:5]
+        top_users = [
+            {
+                "id": item["id"],
+                "alerts": item["alerts"],
+                "lastSeen": item["lastSeen"],
+                "risk": _score_to_severity(item["riskScore"]),
+            }
+            for item in sorted_users
+        ]
+
+        sorted_ips = sorted(source_ips.values(), key=lambda item: (item["alerts"], item["severityScore"]), reverse=True)[:5]
+        top_ips = [
+            {
+                "ip": item["ip"],
+                "country": item["country"],
+                "alerts": item["alerts"],
+                "severity": _score_to_severity(item["severityScore"]),
+            }
+            for item in sorted_ips
+        ]
+
+        alert_types = [
+            {"type": key.replace("_", " ").title(), "count": count}
+            for key, count in sorted(alerts_by_type.items(), key=lambda pair: pair[1], reverse=True)
+        ]
+
+        total_alerts = len(threat_events)
+        avg_severity = round(total_severity_score / max(1, total_alerts), 2)
+
+        return {
+            "status": "success",
+            "thread_id": thread_id,
+            "summary": {
+                "total_alerts": total_alerts,
+                "critical_incidents": severity_counts["critical"],
+                "avg_severity": avg_severity,
+                "high_or_critical": severity_counts["critical"] + severity_counts["high"],
+            },
+            "severity": severity_counts,
+            "alert_types": alert_types,
+            "top_critical_alerts": top_critical_alerts[:3],
+            "top_users": top_users,
+            "top_ips": top_ips,
+            "agent_performance": reports_agents,
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error fetching reports: {str(e)}")
+
+
 @app.get("/api/agents")
-async def get_agents(thread_id: str = "default"):
+async def get_agents(
+    thread_id: str = "default",
+    current_user: Dict[str, Any] = Depends(require_authenticated_user),
+):
     """Fetch agent status and findings from MongoDB for AgentMonitor."""
     try:
         db = MongoDBConnection.get_database()
         agent_results = list(db["agent_results"].find({"thread_id": thread_id}).sort("created_at", -1))
-        agent_flags = list(db["agent_flags"].find({"thread_id": thread_id}))
-        
-        agents_dict = {}
+        agent_flags = list(db["agent_flags"].find({"thread_id": thread_id, "enabled": True}).sort("confidence", -1))
+        threat_events = list(db["threat_events"].find({"thread_id": thread_id}).sort("created_at", -1).limit(500))
+
+        now = datetime.now(timezone.utc)
+        start_of_today = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        expected_agents = ["network", "auth", "behavioural", "orchestrator", "explainer"]
+
+        def _parse_dt(value: Any) -> Optional[datetime]:
+            if not value:
+                return None
+            if isinstance(value, datetime):
+                return value.astimezone(timezone.utc)
+            if isinstance(value, str):
+                normalized = value.strip().replace("Z", "+00:00")
+                try:
+                    parsed = datetime.fromisoformat(normalized)
+                    if parsed.tzinfo is None:
+                        parsed = parsed.replace(tzinfo=timezone.utc)
+                    return parsed.astimezone(timezone.utc)
+                except ValueError:
+                    return None
+            return None
+
+        agents_dict: Dict[str, Dict[str, Any]] = {
+            agent_key: {
+                "name": AGENT_DISPLAY_NAMES.get(agent_key, f"{agent_key.replace('_', ' ').title()} Agent"),
+                "key": agent_key,
+                "status": "offline",
+                "findings_today": 0,
+                "total_findings": 0,
+                "avg_confidence": 0.0,
+                "top_flag": "monitoring",
+                "last_active": None,
+                "avg_processing_ms": 0,
+                "recent_findings": [],
+                "flags": [],
+                "data_source": "none",
+            }
+            for agent_key in expected_agents
+        }
+
+        confidence_sums: Dict[str, float] = {agent_key: 0.0 for agent_key in expected_agents}
+        confidence_counts: Dict[str, int] = {agent_key: 0 for agent_key in expected_agents}
+        processing_ms_sums: Dict[str, int] = {agent_key: 0 for agent_key in expected_agents}
+        processing_ms_counts: Dict[str, int] = {agent_key: 0 for agent_key in expected_agents}
+
         for result in agent_results:
-            agent_name = result.get("agent_name", "unknown")
-            if agent_name not in agents_dict:
-                agents_dict[agent_name] = {
-                    "name": f"{agent_name.replace('_', ' ').title()} Agent",
-                    "key": f"{agent_name}_agent",
-                    "status": "idle",
+            normalized_agent = _normalize_agent_name(result.get("agent_name", ""))
+            if not normalized_agent:
+                continue
+            if normalized_agent not in agents_dict:
+                agents_dict[normalized_agent] = {
+                    "name": AGENT_DISPLAY_NAMES.get(normalized_agent, f"{normalized_agent.replace('_', ' ').title()} Agent"),
+                    "key": normalized_agent,
+                    "status": "offline",
                     "findings_today": 0,
-                    "avg_confidence": 0.75,
+                    "total_findings": 0,
+                    "avg_confidence": 0.0,
                     "top_flag": "monitoring",
-                    "last_active": _to_json_safe(result.get("created_at")),
-                    "avg_processing_ms": 120,
+                    "last_active": None,
+                    "avg_processing_ms": 0,
                     "recent_findings": [],
-                    "flags": []
+                    "flags": [],
+                    "data_source": "none",
                 }
-            agents_dict[agent_name]["findings_today"] += 1
-            agents_dict[agent_name]["recent_findings"].append({
+                confidence_sums.setdefault(normalized_agent, 0.0)
+                confidence_counts.setdefault(normalized_agent, 0)
+                processing_ms_sums.setdefault(normalized_agent, 0)
+                processing_ms_counts.setdefault(normalized_agent, 0)
+
+            agent_entry = agents_dict[normalized_agent]
+            created_at = _parse_dt(result.get("created_at"))
+
+            agent_entry["total_findings"] += 1
+            if created_at and created_at >= start_of_today:
+                agent_entry["findings_today"] += 1
+
+            agent_entry["recent_findings"].append({
                 "finding": result.get("parsed_response", {}).get("summary", ""),
                 "timestamp": _to_json_safe(result.get("created_at"))
             })
-            agents_dict[agent_name]["last_active"] = _to_json_safe(result.get("created_at"))
+
+            previous_last_active = _parse_dt(agent_entry.get("last_active"))
+            if created_at and (previous_last_active is None or created_at > previous_last_active):
+                agent_entry["last_active"] = created_at.isoformat()
+
             parsed_response = result.get("parsed_response", {})
             line_count = parsed_response.get("line_count") or len(parsed_response.get("findings", []))
-            agents_dict[agent_name]["avg_processing_ms"] = max(75, int(90 + (line_count * 18)))
-        
+            estimated_ms = max(75, int(90 + (line_count * 18)))
+            processing_ms_sums[normalized_agent] += estimated_ms
+            processing_ms_counts[normalized_agent] += 1
+            agent_entry["data_source"] = "agent-results"
+
+            confidence_value = parsed_response.get("confidence_score")
+            if isinstance(confidence_value, (int, float)):
+                confidence_sums[normalized_agent] += float(confidence_value)
+                confidence_counts[normalized_agent] += 1
+
         for flags_doc in agent_flags:
-            agent_name = flags_doc.get("agent_name", "unknown")
-            if agent_name in agents_dict:
-                flag_list = flags_doc.get("flags", [])
-                enabled_flags = [f.get("flag_key") for f in flag_list if f.get("enabled")]
-                agents_dict[agent_name]["flags"] = enabled_flags
-                if enabled_flags:
-                    agents_dict[agent_name]["top_flag"] = enabled_flags[0]
-                    agents_dict[agent_name]["avg_confidence"] = round(
-                        sum((f.get("confidence", 0) for f in flag_list if f.get("enabled"))) / max(1, len(enabled_flags)),
-                        2
+            normalized_agent = _normalize_agent_name(flags_doc.get("agent_name", ""))
+            if not normalized_agent or normalized_agent not in agents_dict:
+                continue
+
+            flag_key = str(flags_doc.get("flag_key") or "").strip().lower()
+            if not flag_key:
+                continue
+
+            if flag_key not in agents_dict[normalized_agent]["flags"]:
+                agents_dict[normalized_agent]["flags"].append(flag_key)
+
+        # Fallback inference from threat telemetry so per-agent stats remain useful
+        # even when only a subset of agents are being called due to model rate limits.
+        agent_log_type_map: Dict[str, set[str]] = {
+            "network": {"network", "dns", "process", "malware"},
+            "auth": {"auth", "access", "login"},
+            "behavioural": {"behavioral", "behavioural", "activity"},
+            "orchestrator": set(),
+            "explainer": set(),
+        }
+
+        inferred_events: Dict[str, list[Dict[str, Any]]] = {agent_key: [] for agent_key in agents_dict.keys()}
+        for event in threat_events:
+            log_type = str(event.get("log_type") or "unknown").strip().lower()
+            created_at = _parse_dt(event.get("created_at"))
+            payload = event.get("event_payload", {})
+            severity_label = str(payload.get("severity", "MEDIUM")).upper()
+            severity_score = _severity_to_score(severity_label)
+            finding_text = f"Telemetry event ({log_type}) from {event.get('log_source', 'unknown')} source"
+
+            for agent_key, supported_types in agent_log_type_map.items():
+                if supported_types and log_type in supported_types:
+                    inferred_events.setdefault(agent_key, []).append(
+                        {
+                            "created_at": created_at,
+                            "finding": finding_text,
+                            "severity_score": severity_score,
+                            "log_type": log_type,
+                        }
                     )
-                elif flag_list:
-                    agents_dict[agent_name]["avg_confidence"] = round(
-                        sum((f.get("confidence", 0) for f in flag_list)) / len(flag_list),
-                        2
-                    )
-        
-        agents = list(agents_dict.values())
+
+        # Orchestrator/Explainer can still surface a basic stat line from total telemetry.
+        if threat_events:
+            orchestrator_items = []
+            for event in threat_events:
+                created_at = _parse_dt(event.get("created_at"))
+                payload = event.get("event_payload", {})
+                severity_label = str(payload.get("severity", "MEDIUM")).upper()
+                severity_score = _severity_to_score(severity_label)
+                log_type = str(event.get("log_type") or "unknown").strip().lower()
+                orchestrator_items.append(
+                    {
+                        "created_at": created_at,
+                        "finding": f"Telemetry correlation candidate for {log_type} event",
+                        "severity_score": severity_score,
+                        "log_type": log_type,
+                    }
+                )
+            inferred_events["orchestrator"] = orchestrator_items
+            inferred_events["explainer"] = orchestrator_items
+
+        for agent_key, agent_entry in agents_dict.items():
+            if agent_entry.get("total_findings", 0) > 0:
+                continue
+
+            items = inferred_events.get(agent_key, [])
+            if not items:
+                continue
+
+            items_sorted = sorted(items, key=lambda item: item.get("created_at") or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
+            agent_entry["total_findings"] = len(items_sorted)
+            agent_entry["findings_today"] = len([item for item in items_sorted if item.get("created_at") and item["created_at"] >= start_of_today])
+            agent_entry["last_active"] = items_sorted[0]["created_at"].isoformat() if items_sorted[0].get("created_at") else None
+            agent_entry["recent_findings"] = [
+                {
+                    "finding": item["finding"],
+                    "timestamp": item["created_at"].isoformat() if item.get("created_at") else None,
+                }
+                for item in items_sorted[:5]
+            ]
+
+            inferred_conf = [min(0.95, max(0.2, (item.get("severity_score", 5.0) / 10.0))) for item in items_sorted]
+            agent_entry["avg_confidence"] = round(sum(inferred_conf) / len(inferred_conf), 2)
+            if not agent_entry.get("flags"):
+                agent_entry["top_flag"] = f"{items_sorted[0].get('log_type', 'telemetry')}_anomaly"
+            agent_entry["avg_processing_ms"] = 140
+            agent_entry["data_source"] = "event-inferred"
+
+        for agent_key, agent_entry in agents_dict.items():
+            if processing_ms_counts.get(agent_key, 0) > 0:
+                agent_entry["avg_processing_ms"] = int(processing_ms_sums[agent_key] / processing_ms_counts[agent_key])
+            else:
+                agent_entry["avg_processing_ms"] = 0
+
+            if confidence_counts.get(agent_key, 0) > 0:
+                agent_entry["avg_confidence"] = round(confidence_sums[agent_key] / confidence_counts[agent_key], 2)
+            elif agent_entry["flags"]:
+                matching_confidences = [
+                    float(flag.get("confidence", 0.0))
+                    for flag in agent_flags
+                    if _normalize_agent_name(flag.get("agent_name", "")) == agent_key and isinstance(flag.get("confidence"), (int, float))
+                ]
+                if matching_confidences:
+                    agent_entry["avg_confidence"] = round(sum(matching_confidences) / len(matching_confidences), 2)
+
+            if agent_entry["flags"]:
+                agent_entry["top_flag"] = agent_entry["flags"][0]
+
+            agent_entry["recent_findings"] = agent_entry["recent_findings"][:5]
+
+        latest_agent_key = None
+        latest_agent_time = None
+        latest_runtime_agent_key = None
+        latest_runtime_agent_time = None
+        for agent_key, agent_entry in agents_dict.items():
+            dt = _parse_dt(agent_entry.get("last_active"))
+            if dt and (latest_agent_time is None or dt > latest_agent_time):
+                latest_agent_time = dt
+                latest_agent_key = agent_key
+            if agent_entry.get("data_source") == "agent-results" and dt and (latest_runtime_agent_time is None or dt > latest_runtime_agent_time):
+                latest_runtime_agent_time = dt
+                latest_runtime_agent_key = agent_key
+
+        for agent_key, agent_entry in agents_dict.items():
+            dt = _parse_dt(agent_entry.get("last_active"))
+            if not dt:
+                agent_entry["status"] = "offline"
+                continue
+            age_seconds = (now - dt).total_seconds()
+            if latest_runtime_agent_key == agent_key and age_seconds <= 120:
+                agent_entry["status"] = "processing"
+            elif age_seconds <= 3600:
+                agent_entry["status"] = "idle"
+            else:
+                agent_entry["status"] = "offline"
+
+        agents = [agents_dict[key] for key in expected_agents if key in agents_dict]
+        for dynamic_key, dynamic_value in agents_dict.items():
+            if dynamic_key not in expected_agents:
+                agents.append(dynamic_value)
+
+        total_findings_today = sum(agent.get("findings_today", 0) for agent in agents)
+        active_agents = len([agent for agent in agents if agent.get("status") != "offline"])
+        processing_agents = len([agent for agent in agents if agent.get("status") == "processing"])
+        confidence_values = [agent.get("avg_confidence", 0.0) for agent in agents if isinstance(agent.get("avg_confidence"), (int, float)) and agent.get("avg_confidence", 0.0) > 0]
+        overall_confidence = round(sum(confidence_values) / len(confidence_values), 2) if confidence_values else 0.0
+
         return {
             "status": "success",
             "thread_id": thread_id,
             "count": len(agents),
-            "agents": agents
+            "overview": {
+                "active_agents": active_agents,
+                "processing_agents": processing_agents,
+                "total_findings_today": total_findings_today,
+                "avg_confidence": overall_confidence,
+                "last_pipeline_update": latest_agent_time.isoformat() if latest_agent_time else None,
+            },
+            "pipeline": {
+                "processing_agent": latest_runtime_agent_key if processing_agents > 0 else None,
+                "stages": ["ingest", "supervisor", "specialists", "explainer", "alert"],
+            },
+            "agents": agents,
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error fetching agents: {str(e)}")
 
 
 @app.get("/api/threat-map")
-async def get_threat_map(thread_id: str = "default", time_filter: str = "24h"):
+async def get_threat_map(
+    thread_id: str = "all",
+    time_filter: str = "24h",
+    start_time: Optional[str] = None,
+    end_time: Optional[str] = None,
+    current_user: Dict[str, Any] = Depends(require_authenticated_user),
+):
     """Fetch geographic threat data from MongoDB for ThreatMap visualization."""
     try:
         from datetime import datetime, timedelta
@@ -825,60 +1493,109 @@ async def get_threat_map(thread_id: str = "default", time_filter: str = "24h"):
             "24h": timedelta(hours=24),
             "7d": timedelta(days=7)
         }
-        delta = time_map.get(time_filter, timedelta(hours=24))
-        cutoff_time = datetime.utcnow() - delta
+
+        def _parse_time(value: Optional[str]) -> Optional[datetime]:
+            if not value:
+                return None
+            normalized = value.strip().replace("Z", "+00:00")
+            parsed = datetime.fromisoformat(normalized)
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            return parsed.astimezone(timezone.utc)
+
+        parsed_start_time = _parse_time(start_time)
+        parsed_end_time = _parse_time(end_time)
+
+        if parsed_start_time and parsed_end_time and parsed_end_time < parsed_start_time:
+            raise HTTPException(status_code=400, detail="end_time must be greater than or equal to start_time")
+
+        if parsed_start_time or parsed_end_time:
+            range_start = parsed_start_time or (parsed_end_time - timedelta(hours=24) if parsed_end_time else datetime.now(timezone.utc) - timedelta(hours=24))
+            range_end = parsed_end_time or datetime.now(timezone.utc)
+            effective_time_filter = "custom"
+        else:
+            delta = time_map.get(time_filter, timedelta(hours=24))
+            range_end = datetime.now(timezone.utc)
+            range_start = range_end - delta
+            effective_time_filter = time_filter
         
-        threat_events = list(db["threat_events"].find({
-            "thread_id": thread_id,
-            "created_at": {"$gte": cutoff_time}
-        }).sort("created_at", -1))
-        
-        threat_locations = {}
-        threat_data = []
-        
-        ip_to_country = {
-            "185.220.101.45": "Russia",
-            "10.0.0": "Internal",
-            "192.168": "Internal",
-            "8.8.8.8": "USA",
-            "1.1.1.1": "Australia"
+        query: Dict[str, Any] = {
+            "created_at": {"$gte": range_start, "$lte": range_end}
         }
+        normalized_thread = (thread_id or "").strip().lower()
+        if normalized_thread not in ("", "all", "*"):
+            query["thread_id"] = thread_id
+
+        threat_events = list(db["threat_events"].find(query).sort("created_at", -1))
+        
+        threat_locations: Dict[str, Dict[str, Any]] = {}
+        threat_data = []
+        severity_counts = {"critical": 0, "high": 0, "medium": 0, "low": 0}
+        log_type_counts: Dict[str, int] = {}
         
         for event in threat_events:
             payload = event.get("event_payload", {})
-            source_ip = payload.get("source_ip", "unknown")
-            
-            country = "Unknown"
-            for ip_prefix, country_name in ip_to_country.items():
-                if source_ip.startswith(ip_prefix):
-                    country = country_name
-                    break
-            
+            source_ip = str(payload.get("source_ip", "unknown"))
+
+            country = _country_from_ip(source_ip=source_ip, payload=payload)
+            coordinates = _coordinates_for_country(country)
+
+            severity = str(payload.get("severity", "MEDIUM")).upper()
+            if severity == "CRITICAL":
+                severity_counts["critical"] += 1
+            elif severity == "HIGH":
+                severity_counts["high"] += 1
+            elif severity == "MEDIUM":
+                severity_counts["medium"] += 1
+            else:
+                severity_counts["low"] += 1
+
+            log_type = str(event.get("log_type", "unknown")).lower()
+            log_type_counts[log_type] = log_type_counts.get(log_type, 0) + 1
+
             if country not in threat_locations:
-                threat_locations[country] = 0
-            threat_locations[country] += 1
+                threat_locations[country] = {
+                    "country": country,
+                    "count": 0,
+                    "lat": coordinates["lat"],
+                    "lng": coordinates["lng"],
+                }
+            threat_locations[country]["count"] += 1
             
             threat_data.append({
                 "_id": str(event.get("_id", "")),
                 "country": country,
                 "source_ip": source_ip,
                 "log_type": event.get("log_type", "unknown"),
-                "severity": payload.get("severity", "MEDIUM"),
+                "severity": severity,
                 "timestamp": _to_json_safe(event.get("created_at")),
-                "description": payload.get("query", payload.get("command", "Threat detected"))
+                "description": payload.get("query", payload.get("command", "Threat detected")),
+                "lat": coordinates["lat"],
+                "lng": coordinates["lng"],
             })
-        
-        locations = [
-            {"country": country, "count": count}
-            for country, count in threat_locations.items()
+
+        locations = sorted(
+            list(threat_locations.values()),
+            key=lambda item: item["count"],
+            reverse=True,
+        )
+
+        top_log_types = [
+            {"type": log_type.replace("_", " ").title(), "count": count}
+            for log_type, count in sorted(log_type_counts.items(), key=lambda pair: pair[1], reverse=True)
         ]
         
         return {
             "status": "success",
             "thread_id": thread_id,
-            "time_filter": time_filter,
+            "thread_scope": "all" if normalized_thread in ("", "all", "*") else "single",
+            "time_filter": effective_time_filter,
+            "window_start": _to_json_safe(range_start),
+            "window_end": _to_json_safe(range_end),
             "location_count": len(locations),
             "threat_count": len(threat_data),
+            "severity_counts": severity_counts,
+            "top_log_types": top_log_types,
             "locations": locations,
             "threats": threat_data
         }

@@ -39,8 +39,8 @@ sendBtn.addEventListener('click', async () => {
   const logSource = document.getElementById('logSource').value.trim();
   const logType = document.getElementById('logType').value;
 
-  if (!apiBaseUrl || !logSource || !logType) {
-    errorEl.textContent = 'API base URL, log source, and log type are required.';
+  if (!apiBaseUrl || !apiKey || !logSource || !logType) {
+    errorEl.textContent = 'API base URL, API key, log source, and log type are required.';
     return;
   }
 
@@ -55,10 +55,10 @@ sendBtn.addEventListener('click', async () => {
   const threadId = crypto.randomUUID();
   threadLineEl.textContent = `thread_id: ${threadId}`;
 
-  const headers = { 'Content-Type': 'application/json' };
-  if (apiKey) {
-    headers['x-api-key'] = apiKey;
-  }
+  const headers = {
+    'Content-Type': 'application/json',
+    'x-api-key': apiKey,
+  };
 
   sendBtn.disabled = true;
   sendBtn.textContent = 'Sending...';

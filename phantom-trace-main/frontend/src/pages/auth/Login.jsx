@@ -15,17 +15,21 @@ export default function Login() {
   const [password, setPassword] = useState('')
   const [showPassword, setShowPassword] = useState(false)
   const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
 
   async function handleSubmit(e) {
     e.preventDefault()
+    setError('')
     setLoading(true)
-    
-    // Simulate API delay
-    setTimeout(() => {
-      login(email, password)
-      setLoading(false)
+
+    try {
+      await login(email, password)
       navigate('/')
-    }, 800)
+    } catch (err) {
+      setError(err.message || 'Unable to sign in.')
+    } finally {
+      setLoading(false)
+    }
   }
 
   return (
@@ -132,6 +136,10 @@ export default function Login() {
             >
               {loading ? 'Signing in...' : 'Sign in'}
             </button>
+
+            {error && (
+              <p className="text-sm text-red-600 mt-3">{error}</p>
+            )}
           </form>
 
           {/* Register link */}

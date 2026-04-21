@@ -7,13 +7,16 @@ import { useNavigate } from 'react-router-dom'
 import { motion } from 'framer-motion'
 import { Check, Copy, CheckCircle } from 'lucide-react'
 import { useAuth } from '../../hooks/useAuth'
+import { getStoredSession } from '../../utils/apiClient'
 
 export default function ApiKeySetup() {
   const navigate = useNavigate()
   const { client } = useAuth()
   const [copied, setCopied] = useState(false)
+  const { apiKey: persistedApiKey } = getStoredSession()
 
-  const apiKey = client?.api_key || 'ts_live_k9x2mq7rtp4j8nve'
+  const apiKey = client?.api_key || persistedApiKey || 'Unavailable - sign up again to generate key'
+  const maskedApiKey = '●'.repeat(Math.max(20, Math.min(40, apiKey.length)))
 
   function copyToClipboard() {
     navigator.clipboard.writeText(apiKey)
@@ -60,9 +63,8 @@ export default function ApiKeySetup() {
           <div className="flex items-center justify-between gap-4">
             <div className="flex-1">
               <p className="text-xs text-brown-secondary uppercase tracking-wide mb-2">API Key</p>
-              <code className="font-mono text-lg text-brown-primary break-all">
-                {apiKey}
-              </code>
+              <p className="font-mono text-2xl tracking-widest text-brown-primary break-all select-none">{maskedApiKey}</p>
+              <p className="text-xs text-brown-secondary mt-2">Hidden for security. Use Copy to use it.</p>
             </div>
             <button
               onClick={copyToClipboard}
@@ -92,7 +94,7 @@ export default function ApiKeySetup() {
           <p className="text-brown-primary font-semibold mb-3">Integration example:</p>
           <pre className="bg-brown-primary text-cream p-6 rounded-lg overflow-x-auto font-mono text-sm">
 {`// Add this to your website
-const API_KEY = "${apiKey}";
+const API_KEY = "<paste-your-copied-key-here>";
 
 fetch("https://api.threatsense.ai/logs", {
   method: "POST",

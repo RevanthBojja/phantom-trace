@@ -1,8 +1,5 @@
 import os
 from dotenv import load_dotenv
-import json
-from pydantic import BaseModel
-from typing import List
 
 def _load_env() -> None:
     """Load backend environment variables from .env, then .env.example as fallback."""
@@ -21,14 +18,6 @@ def safe_invoke(agent, input_dict, config):
     return agent.invoke(input_dict, config)
 
 def read(response):
-    if isinstance(response, dict) and response.get("structured_response") is not None:
-        structured = response["structured_response"]
-        if hasattr(structured, "model_dump"):
-            return json.dumps(structured.model_dump(), indent=2)
-        if isinstance(structured, dict):
-            return json.dumps(structured, indent=2)
-        return str(structured)
-
     def _content_to_text(content) -> str:
         if isinstance(content, str):
             return content.strip()
@@ -78,15 +67,6 @@ def _build_model() -> ChatGoogleGenerativeAI:
 
 model = _build_model()
 
-
-class OrchestratorStructuredResponse(BaseModel):
-    selected_agents: List[str]
-    routing_reason: str
-    severity_label: str
-    confidence_score: float
-    execution_order: List[str]
-    additional_notes: str
-
 from langchain.messages import HumanMessage
 from langchain.agents import create_agent
 from langgraph.checkpoint.memory import InMemorySaver
@@ -96,12 +76,10 @@ orchestrator_agent = create_agent(
     tools=[],
     system_prompt=(
         "You are an orchestrator agent. Based on the given prompt, choose which agents to invoke and return "
-        "a structured routing plan. Agents available: network_agent, behavioural_agent, auth_agent, "
+        "a python list of agent names. Agents available: network_agent, behavioural_agent, auth_agent, "
         "explainer_agent. Keep selection minimal to save cost and prioritize agents that match the latest "
-        "persisted telemetry context included in the prompt. Return calculated, structured results only "
-        "using the response schema."
+        "persisted telemetry context included in the prompt."
     ),
-    response_format=OrchestratorStructuredResponse,
     checkpointer=InMemorySaver()
 )
 

@@ -1,7 +1,10 @@
 import { useState, useEffect } from 'react'
+import { apiJson } from '../utils/apiClient'
 
 export function useAgents(threadId = 'default') {
   const [agents, setAgents] = useState([])
+  const [overview, setOverview] = useState(null)
+  const [pipeline, setPipeline] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
 
@@ -10,14 +13,10 @@ export function useAgents(threadId = 'default') {
       try {
         setLoading(true)
         setError(null)
-        const response = await fetch(
-          `http://localhost:8000/api/agents?thread_id=${threadId}`
-        )
-        if (!response.ok) {
-          throw new Error(`API error: ${response.status}`)
-        }
-        const data = await response.json()
+        const data = await apiJson(`/api/agents?thread_id=${threadId}`)
         setAgents(data.agents || [])
+        setOverview(data.overview || null)
+        setPipeline(data.pipeline || null)
       } catch (err) {
         console.error('Error fetching agents:', err)
         setError(err.message)
@@ -27,7 +26,13 @@ export function useAgents(threadId = 'default') {
     }
 
     fetchAgents()
+
+    const intervalId = setInterval(() => {
+      fetchAgents()
+    }, 15000)
+
+    return () => clearInterval(intervalId)
   }, [threadId])
 
-  return { agents, loading, error }
+  return { agents, overview, pipeline, loading, error }
 }

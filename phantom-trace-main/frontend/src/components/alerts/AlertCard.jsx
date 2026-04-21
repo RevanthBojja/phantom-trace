@@ -10,7 +10,9 @@ import { SeverityBadge } from './SeverityBadge'
 import { timeAgo, severityBorderClass } from '../../utils/helpers'
 import clsx from 'clsx'
 
-export function AlertCard({ alert, compact = false }) {
+export function AlertCard({ alert, compact = false, fromPath = null }) {
+  const linkState = fromPath ? { alert, fromPath } : { alert }
+
   if (compact) {
     return (
       <motion.div
@@ -18,7 +20,7 @@ export function AlertCard({ alert, compact = false }) {
         animate={{ opacity: 1, x: 0 }}
         className="py-3 px-4 border-b border-border hover:bg-orange-tint cursor-pointer transition-colors"
       >
-        <Link to={`/alerts/${alert._id}`}>
+        <Link to={`/alerts/${alert._id}`} state={linkState}>
           <div className="flex items-center gap-3 justify-between">
             <div className="flex items-center gap-3 flex-1 min-w-0">
               {/* Severity dot */}
@@ -103,6 +105,7 @@ export function AlertCard({ alert, compact = false }) {
         </div>
         <Link
           to={`/alerts/${alert._id}`}
+          state={linkState}
           className="text-orange-DEFAULT font-semibold hover:underline flex items-center gap-1"
         >
           View Details <ArrowRight className="w-4 h-4" />

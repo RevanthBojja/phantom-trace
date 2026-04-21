@@ -2,25 +2,111 @@
 // Full detailed view of a single alert
 // Shows narrative, timeline, agent findings, MITRE techniques, actions
 
-import { useParams, Link, useNavigate } from 'react-router-dom'
+import { useParams, Link, useLocation } from 'react-router-dom'
 import { motion } from 'framer-motion'
 import { ArrowLeft, CheckCircle, Sparkles, ExternalLink } from 'lucide-react'
-import { DUMMY_ALERTS } from '../data/dummyData'
 import { SeverityBadge } from '../components/alerts/SeverityBadge'
 import { timeAgo } from '../utils/helpers'
-import { useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
+import { apiJson } from '../utils/apiClient'
 
 export default function AlertDetail() {
   const { id } = useParams()
-  const alert = DUMMY_ALERTS.find(a => a._id === id)
+  const location = useLocation()
+  const [alert, setAlert] = useState(location.state?.alert || null)
+  const [loading, setLoading] = useState(!location.state?.alert)
+  const [error, setError] = useState(null)
+  const fromPath = location.state?.fromPath || '/reports'
   const [acknowledged, setAcknowledged] = useState(alert?.acknowledged || false)
+
+  useEffect(() => {
+    // Keep local acknowledge state in sync when alert changes after async fetch.
+    setAcknowledged(Boolean(alert?.acknowledged))
+  }, [alert])
+
+  useEffect(() => {
+    if (location.state?.alert?._id === id) {
+      setAlert(location.state.alert)
+      setError(null)
+      setLoading(false)
+      return
+    }
+
+    const fetchAlert = async () => {
+      try {
+        setLoading(true)
+        setError(null)
+
+        const data = await apiJson('/api/alerts?thread_id=default&limit=500')
+        const foundAlert = (data.alerts || []).find((item) => item._id === id)
+        if (!foundAlert) {
+          setAlert(null)
+          setError('Alert not found in MongoDB for this thread.')
+          return
+        }
+
+        setAlert(foundAlert)
+      } catch (err) {
+        setAlert(null)
+        setError(err.message || 'Unable to load alert details.')
+      } finally {
+        setLoading(false)
+      }
+    }
+
+    fetchAlert()
+  }, [id, location.state])
+
+  const timeline = useMemo(() => {
+    if (!alert?.timeline?.length) {
+      return []
+    }
+    return alert.timeline
+  }, [alert])
+
+  const agentFindings = useMemo(() => {
+    if (alert?.agent_findings && typeof alert.agent_findings === 'object') {
+      return alert.agent_findings
+    }
+
+    const payload = alert?.event_payload || {}
+    const findings = []
+    if (payload.source_ip) findings.push(`Source IP: ${payload.source_ip}`)
+    if (payload.user_id) findings.push(`User ID: ${payload.user_id}`)
+    if (payload.destination_ip) findings.push(`Destination IP: ${payload.destination_ip}`)
+    if (payload.process_name) findings.push(`Process: ${payload.process_name}`)
+    if (payload.query) findings.push(`Query: ${payload.query}`)
+
+    return {
+      system_agent: {
+        anomaly_flags: findings.length ? findings : ['event_detected'],
+        confidence: Math.min(0.99, (alert?.severity_score || 5) / 10),
+        source_ip: payload.source_ip,
+        user_id: payload.user_id,
+        process_name: payload.process_name,
+        entity_id: payload.user_id || payload.source_ip,
+      },
+    }
+  }, [alert])
+
+  const mitreTechniques = alert?.mitre_techniques || []
+  const recommendedActions = alert?.recommended_actions || []
+  const affectedEntities = alert?.affected_entities || []
+
+  if (loading) {
+    return (
+      <div className="card">
+        <p className="text-brown-secondary">Loading alert details from MongoDB...</p>
+      </div>
+    )
+  }
 
   if (!alert) {
     return (
       <div className="text-center py-12">
-        <p className="text-brown-secondary">Alert not found</p>
-        <Link to="/" className="text-orange-DEFAULT hover:underline mt-4">
-          Back to alerts
+        <p className="text-brown-secondary">{error || 'Alert not found'}</p>
+        <Link to={fromPath} className="text-orange-DEFAULT hover:underline mt-4 inline-block">
+          Back
         </Link>
       </div>
     )
@@ -29,21 +115,21 @@ export default function AlertDetail() {
   const agentColors = {
     network_agent: { color: 'bg-blue-50', border: 'border-blue-300', text: 'text-blue-800', icon: 'bg-blue-100' },
     auth_agent: { color: 'bg-orange-50', border: 'border-orange-300', text: 'text-orange-800', icon: 'bg-orange-100' },
-    malware_agent: { color: 'bg-red-50', border: 'border-red-300', text: 'text-red-800', icon: 'bg-red-100' },
     behavioral_agent: { color: 'bg-teal-50', border: 'border-teal-300', text: 'text-teal-800', icon: 'bg-teal-100' },
+    system_agent: { color: 'bg-slate-50', border: 'border-slate-300', text: 'text-slate-800', icon: 'bg-slate-100' },
   }
 
   const agentNames = {
     network_agent: 'Network Anomaly Agent',
     auth_agent: 'Auth & Access Agent',
-    malware_agent: 'Malware & Process Agent',
     behavioral_agent: 'Behavioral Analytics Agent',
+    system_agent: 'Security Event System',
   }
 
   return (
     <div>
       {/* Back button */}
-      <Link to="/" className="flex items-center gap-2 text-orange-DEFAULT hover:underline mb-6">
+      <Link to={fromPath} className="flex items-center gap-2 text-orange-DEFAULT hover:underline mb-6">
         <ArrowLeft className="w-4 h-4" />
         Back to alerts
       </Link>
@@ -74,7 +160,7 @@ export default function AlertDetail() {
           <div>
             <p className="text-brown-secondary">MITRE Techniques</p>
             <p className="font-bold text-lg text-brown-primary">
-              {alert.mitre_techniques.length} detected
+              {mitreTechniques.length} detected
             </p>
           </div>
           <div>
@@ -121,10 +207,10 @@ export default function AlertDetail() {
         <h3 className="font-semibold text-brown-primary mb-6">Event Timeline</h3>
 
         <div className="space-y-6">
-          {alert.timeline.map((event, idx) => (
+          {timeline.map((event, idx) => (
             <div key={idx} className="relative flex gap-4">
               {/* Timeline line */}
-              {idx < alert.timeline.length - 1 && (
+              {idx < timeline.length - 1 && (
                 <div className="absolute left-4 top-8 bottom-0 w-0.5 bg-border"></div>
               )}
 
@@ -136,9 +222,9 @@ export default function AlertDetail() {
                       ? 'bg-blue-500'
                       : event.agent_source.includes('Auth')
                       ? 'bg-orange-500'
-                      : event.agent_source.includes('Malware')
-                      ? 'bg-red-500'
-                      : 'bg-teal-500'
+                      : event.agent_source.includes('Behavior')
+                      ? 'bg-teal-500'
+                      : 'bg-slate-500'
                   }`}
                 ></div>
               </div>
@@ -170,12 +256,12 @@ export default function AlertDetail() {
         <h3 className="font-semibold text-brown-primary mb-4">Agent Findings</h3>
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          {Object.entries(alert.agent_findings).map(([agentKey, findings]) => {
-            const colors = agentColors[agentKey]
+          {Object.entries(agentFindings).map(([agentKey, findings]) => {
+            const colors = agentColors[agentKey] || agentColors.system_agent
             return (
               <div key={agentKey} className={`card border-t-4 ${colors.border}`}>
                 <h4 className={`font-semibold text-sm ${colors.text} mb-3`}>
-                  {agentNames[agentKey]}
+                  {agentNames[agentKey] || 'Security Agent'}
                 </h4>
 
                 {/* Confidence bar */}
@@ -183,21 +269,21 @@ export default function AlertDetail() {
                   <div className="flex justify-between items-center mb-1">
                     <p className="text-xs text-brown-secondary">Confidence</p>
                     <p className="text-sm font-bold text-brown-primary">
-                      {(findings.confidence * 100).toFixed(0)}%
+                      {((findings.confidence || 0) * 100).toFixed(0)}%
                     </p>
                   </div>
                   <div className="w-full h-2 bg-border rounded-full overflow-hidden">
                     <div
                       className="h-full bg-orange-DEFAULT transition-all duration-300"
-                      style={{ width: `${findings.confidence * 100}%` }}
+                      style={{ width: `${(findings.confidence || 0) * 100}%` }}
                     ></div>
                   </div>
                 </div>
 
                 {/* Anomaly flags */}
-                {findings.anomaly_flags.length > 0 ? (
+                {(findings.anomaly_flags || []).length > 0 ? (
                   <div className="flex flex-wrap gap-2 mb-3">
-                    {findings.anomaly_flags.map((flag) => (
+                    {(findings.anomaly_flags || []).map((flag) => (
                       <span
                         key={flag}
                         className="text-xs bg-orange-50 text-orange-700 border border-orange-200 px-2 py-1 rounded"
@@ -236,9 +322,12 @@ export default function AlertDetail() {
           MITRE ATT&CK Techniques Detected
         </h3>
 
-        <div className="overflow-x-auto">
-          <div className="flex gap-3 pb-3">
-            {alert.mitre_techniques.map((technique) => (
+        {mitreTechniques.length === 0 ? (
+          <p className="text-sm text-brown-secondary">No MITRE techniques mapped for this event.</p>
+        ) : (
+          <div className="overflow-x-auto">
+            <div className="flex gap-3 pb-3">
+              {mitreTechniques.map((technique) => (
               <a
                 key={technique.id}
                 href={technique.url}
@@ -256,9 +345,10 @@ export default function AlertDetail() {
                   {technique.tactic}
                 </span>
               </a>
-            ))}
+              ))}
+            </div>
           </div>
-        </div>
+        )}
       </motion.div>
 
       {/* Recommended Actions */}
@@ -270,16 +360,20 @@ export default function AlertDetail() {
       >
         <h3 className="font-semibold text-brown-primary mb-4">Recommended Actions</h3>
 
-        <ol className="space-y-3">
-          {alert.recommended_actions.map((action, idx) => (
+        {recommendedActions.length === 0 ? (
+          <p className="text-sm text-brown-secondary">No recommended actions were generated for this event.</p>
+        ) : (
+          <ol className="space-y-3">
+            {recommendedActions.map((action, idx) => (
             <li key={idx} className="flex gap-4">
               <div className="w-7 h-7 rounded-full bg-orange-DEFAULT text-white flex items-center justify-center text-sm font-bold flex-shrink-0">
                 {idx + 1}
               </div>
               <p className="text-brown-primary text-sm mt-0.5">{action}</p>
             </li>
-          ))}
-        </ol>
+            ))}
+          </ol>
+        )}
       </motion.div>
 
       {/* Action buttons */}
@@ -290,7 +384,7 @@ export default function AlertDetail() {
         className="flex gap-4 justify-between items-center py-6 border-t border-border"
       >
         <div className="flex gap-2">
-          {alert.affected_entities.map((entity) => (
+          {affectedEntities.map((entity) => (
             <span key={entity} className="text-xs bg-gray-100 text-gray-700 px-2.5 py-1 rounded">
               {entity}
             </span>

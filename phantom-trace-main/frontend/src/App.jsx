@@ -20,6 +20,8 @@ import AgentMonitor from './pages/AgentMonitor'
 import ThreatMap from './pages/ThreatMap'
 import Chat from './pages/Chat'
 import Reports from './pages/Reports'
+import Settings from './pages/Settings'
+import LiveAlerts from './pages/LiveAlerts'
 
 export default function App() {
   return (
@@ -40,12 +42,14 @@ export default function App() {
             }
           >
             <Route path="/" element={<Dashboard />} />
+            <Route path="/live-alerts" element={<LiveAlerts />} />
             <Route path="/alerts/:id" element={<AlertDetail />} />
             <Route path="/logs" element={<LogExplorer />} />
             <Route path="/agents" element={<AgentMonitor />} />
             <Route path="/map" element={<ThreatMap />} />
             <Route path="/chat" element={<Chat />} />
             <Route path="/reports" element={<Reports />} />
+            <Route path="/settings" element={<Settings />} />
           </Route>
         </Routes>
       </BrowserRouter>

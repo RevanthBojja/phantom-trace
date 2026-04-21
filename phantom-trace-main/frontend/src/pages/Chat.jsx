@@ -6,6 +6,7 @@ import { motion } from 'framer-motion'
 import { SendHorizontal, Trash2, Shield } from 'lucide-react'
 import { ChatMessage } from '../components/chat/ChatMessage'
 import { SuggestedPrompts } from '../components/chat/SuggestedPrompts'
+import { apiJson } from '../utils/apiClient'
 
 const AGENT_OPTIONS = [
   { value: 'network', label: 'Network' },
@@ -14,8 +15,6 @@ const AGENT_OPTIONS = [
   { value: 'orchestrator', label: 'Orchestrator' },
   { value: 'explainer', label: 'Explainer' },
 ]
-
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'
 
 export default function Chat() {
   const [messages, setMessages] = useState([])
@@ -59,7 +58,7 @@ export default function Chat() {
   }
 
   const callAgentChat = async (messageText, agent) => {
-    const response = await fetch(`${API_BASE_URL}/chat`, {
+    return apiJson('/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -68,19 +67,6 @@ export default function Chat() {
         thread_id: threadIdRef.current,
       }),
     })
-
-    if (!response.ok) {
-      let detail = 'Failed to get a response from backend.'
-      try {
-        const errorPayload = await response.json()
-        detail = errorPayload.detail || detail
-      } catch {
-        // Ignore JSON parse errors and use fallback detail.
-      }
-      throw new Error(detail)
-    }
-
-    return response.json()
   }
 
   const handleSend = async (text = null) => {
