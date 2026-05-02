@@ -16,12 +16,46 @@ export default function Dashboard() {
   const { client } = useAuth()
   
   // Fetch alerts from MongoDB backend
-  const { alerts, loading, error, summary } = useAlerts('default')
+  const { alerts, loading, error, summary } = useAlerts('all')
 
   const counts = summary?.counts || { critical: 0, high: 0, medium: 0, low: 0 }
   const logsToday = summary?.logs_today || 0
   const activeAgents = summary?.agents_active || 0
   const knownAgents = 5
+  const maxSeverityScore = alerts.reduce((maxScore, alert) => {
+    const score = Number(alert?.severity_score || 0)
+    return Math.max(maxScore, Number.isFinite(score) ? score : 0)
+  }, 0)
+
+  const now = new Date()
+  const last24hStart = new Date(now.getTime() - (24 * 60 * 60 * 1000))
+  const alertsByHourMap = {}
+  for (let i = 23; i >= 0; i -= 1) {
+    const slot = new Date(now.getTime() - (i * 60 * 60 * 1000))
+    const key = `${slot.getHours().toString().padStart(2, '0')}:00`
+    alertsByHourMap[key] = 0
+  }
+
+  alerts.forEach((alert) => {
+    if (!alert?.created_at) {
+      return
+    }
+    const createdAt = new Date(alert.created_at)
+    if (Number.isNaN(createdAt.getTime()) || createdAt < last24hStart) {
+      return
+    }
+    const hourKey = `${createdAt.getHours().toString().padStart(2, '0')}:00`
+    if (Object.prototype.hasOwnProperty.call(alertsByHourMap, hourKey)) {
+      alertsByHourMap[hourKey] += 1
+    }
+  })
+
+  const alertsByHour = Object.entries(alertsByHourMap).map(([hour, count]) => ({
+    hour,
+    count,
+  }))
+
+  const alertTypeData = Array.isArray(summary?.alerts_by_type) ? summary.alerts_by_type : []
 
   const statCards = [
     {
@@ -48,7 +82,7 @@ export default function Dashboard() {
       icon: Activity,
       color: 'bg-blue-100',
       textColor: 'text-blue-600',
-      trend: '↑ 12% from yesterday',
+      trend: `${logsToday} ingested today`,
       trendColor: 'text-blue-600',
     },
     {
@@ -122,8 +156,8 @@ export default function Dashboard() {
           transition={{ delay: 0.2 }}
           className="lg:col-span-2 space-y-6"
         >
-          <SeverityGauge />
-          <AlertsOverTime />
+          <SeverityGauge maxSeverityScore={maxSeverityScore} />
+          <AlertsOverTime data={alertsByHour} />
         </motion.div>
       </div>
 
@@ -133,7 +167,7 @@ export default function Dashboard() {
         animate={{ opacity: 1, y: 0 }}
         transition={{ delay: 0.3 }}
       >
-        <ThreatTypeBar />
+        <ThreatTypeBar data={alertTypeData} />
       </motion.div>
     </div>
   )

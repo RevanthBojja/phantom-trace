@@ -1,7 +1,6 @@
 // ThreatSense — AlertFeed
 // Shows live alert feed as a scrollable list of compact AlertCards
 
-import { motion } from 'framer-motion'
 import { AlertTriangle, Zap, Lock } from 'lucide-react'
 import { AlertCard } from './AlertCard'
 
@@ -17,14 +16,10 @@ export function AlertFeed({ alerts = [], loading = false, error = null }) {
       <div className="flex items-center justify-between mb-4 pb-4 border-b border-border">
         <h3 className="font-semibold text-brown-primary">Live Alert Feed</h3>
         {!loading && (
-          <motion.div
-            animate={{ rotate: 360 }}
-            transition={{ duration: 2, repeat: Infinity, ease: 'linear' }}
-            className="text-xs text-green-600 font-semibold flex items-center gap-1"
-          >
-            <span className="inline-block w-2 h-2 rounded-full bg-green-500 animate-pulse"></span>
-            Live
-          </motion.div>
+          <div className="text-xs text-green-600 font-semibold flex items-center gap-1">
+            <span className="inline-block w-2 h-2 rounded-full bg-green-500 animate-pulse" aria-hidden="true"></span>
+            <span>Live</span>
+          </div>
         )}
       </div>
 

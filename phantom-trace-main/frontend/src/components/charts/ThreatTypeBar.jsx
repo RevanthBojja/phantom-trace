@@ -4,9 +4,8 @@
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer
 } from 'recharts'
-import { DUMMY_STATS } from '../../data/dummyData'
 
-export function ThreatTypeBar() {
+export function ThreatTypeBar({ data = [] }) {
   const CustomTooltip = ({ active, payload }) => {
     if (active && payload?.[0]) {
       return (
@@ -28,7 +27,7 @@ export function ThreatTypeBar() {
       <h3 className="font-semibold text-brown-primary mb-4">Alert Types Today</h3>
       <ResponsiveContainer width="100%" height={220}>
         <BarChart
-          data={DUMMY_STATS.alerts_by_type}
+          data={data}
           layout="vertical"
           margin={{ top: 5, right: 20, left: 200, bottom: 5 }}
         >

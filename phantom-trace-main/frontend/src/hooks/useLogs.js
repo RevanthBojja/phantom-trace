@@ -4,7 +4,7 @@
 import { useState, useEffect } from 'react'
 import { apiJson } from '../utils/apiClient'
 
-export function useLogs(threadId = 'default') {
+export function useLogs(threadId = 'all') {
   const [logs, setLogs] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)

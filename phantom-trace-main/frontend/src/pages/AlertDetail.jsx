@@ -6,7 +6,7 @@ import { useParams, Link, useLocation } from 'react-router-dom'
 import { motion } from 'framer-motion'
 import { ArrowLeft, CheckCircle, Sparkles, ExternalLink } from 'lucide-react'
 import { SeverityBadge } from '../components/alerts/SeverityBadge'
-import { timeAgo } from '../utils/helpers'
+import { formatToIST, timeAgo } from '../utils/helpers'
 import { useEffect, useMemo, useState } from 'react'
 import { apiJson } from '../utils/apiClient'
 
@@ -37,7 +37,7 @@ export default function AlertDetail() {
         setLoading(true)
         setError(null)
 
-        const data = await apiJson('/api/alerts?thread_id=default&limit=500')
+        const data = await apiJson('/api/alerts?thread_id=all&limit=500')
         const foundAlert = (data.alerts || []).find((item) => item._id === id)
         if (!foundAlert) {
           setAlert(null)
@@ -232,7 +232,7 @@ export default function AlertDetail() {
               {/* Content */}
               <div className="flex-1">
                 <p className="font-mono text-xs text-brown-secondary mb-1">
-                  {new Date(event.timestamp).toLocaleTimeString()}
+                  {formatToIST(event.timestamp)}
                 </p>
                 <p className="text-sm font-medium text-brown-primary">
                   {event.event}

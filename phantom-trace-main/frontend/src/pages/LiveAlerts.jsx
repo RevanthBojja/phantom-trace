@@ -3,7 +3,7 @@ import { AlertCard } from '../components/alerts/AlertCard'
 import { useAlerts } from '../hooks/useAlerts'
 
 export default function LiveAlerts() {
-  const { alerts, loading, error } = useAlerts('default')
+  const { alerts, loading, error } = useAlerts('all')
 
   const sortedAlerts = [...(alerts || [])].sort(
     (a, b) => new Date(b.created_at) - new Date(a.created_at)

@@ -20,7 +20,7 @@ export default function Reports() {
       try {
         setLoading(true)
         setError(null)
-        const data = await apiJson('/api/reports?thread_id=default')
+        const data = await apiJson('/api/reports?thread_id=all')
         setReportData(data)
       } catch (err) {
         console.error('Error fetching reports:', err)

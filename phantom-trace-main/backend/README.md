@@ -119,7 +119,7 @@ All agent endpoints use the same request schema:
 ```
 
 ### POST /events/ingest
-Persist a raw event in SQLite so specialist agents can analyze real telemetry.
+Persist a raw event in MongoDB so specialist agents can analyze real telemetry.
 
 **Request Body:**
 ```json
@@ -139,15 +139,31 @@ Persist a raw event in SQLite so specialist agents can analyze real telemetry.
 ### GET /events/latest/{thread_id}
 Fetch the latest persisted event for a thread.
 
-## Real Data Workflow (SQLite)
+## Real Data Workflow (MongoDB)
 
 1. Ingest telemetry with `POST /events/ingest`.
 2. Run orchestrator/specialist agents with the same `thread_id`.
-3. Backend stores agent responses plus inferred enabled flags in `agent_results_cache.sqlite3`.
+3. Backend stores:
+  - `threat_events` (raw telemetry events)
+  - `agent_results` (agent responses)
+  - `agent_flags` (inferred flags)
 4. Explainer automatically receives:
    - latest event payload
    - enabled flags per agent
    - cached specialist findings
+
+### Specialist Endpoint Auto-Ingest Behavior
+
+For `POST /call-networkAgent`, `POST /call-authAgent`, `POST /call-behaviouralAgent`, and `POST /call-orchestratorAgent`:
+
+- If `message` is a JSON object string, backend auto-persists it to `threat_events` before running the agent.
+- `log_source` and `log_type` are inferred from payload fields when present; otherwise they default to the selected agent name.
+- Agent response is persisted to `agent_results` and inferred flags are persisted to `agent_flags`.
+
+This means you can either:
+
+1. Call `POST /events/ingest` first (recommended explicit flow), or
+2. Send structured JSON directly in `message` to specialist endpoints and rely on auto-ingest.
 
 ### Quick cURL example
 

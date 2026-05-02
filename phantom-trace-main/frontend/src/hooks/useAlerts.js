@@ -4,7 +4,7 @@
 import { useState, useEffect } from 'react'
 import { apiJson } from '../utils/apiClient'
 
-export function useAlerts(threadId = 'default') {
+export function useAlerts(threadId = 'all') {
   const [alerts, setAlerts] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)

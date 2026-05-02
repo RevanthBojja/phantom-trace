@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { apiJson } from '../utils/apiClient'
 
-export function useThreatMap(threadId = 'default', timeFilter = '24h', customWindow = null) {
+export function useThreatMap(threadId = 'all', timeFilter = '24h', customWindow = null) {
   const [locations, setLocations] = useState([])
   const [threats, setThreats] = useState([])
   const [threadScope, setThreadScope] = useState('single')

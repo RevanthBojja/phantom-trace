@@ -9,7 +9,7 @@ import { AgentCard } from '../components/agents/AgentCard'
 import { timeAgo } from '../utils/helpers'
 
 export default function AgentMonitor() {
-  const { agents, overview, pipeline, loading, error } = useAgents('default')
+  const { agents, overview, pipeline, loading, error } = useAgents('all')
   const [findingFilter, setFindingFilter] = useState('All')
 
   const findingTabs = ['All', 'Network', 'Auth', 'Behavioural', 'Orchestrator', 'Explainer']

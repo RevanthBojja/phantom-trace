@@ -2,13 +2,15 @@
 // White headers with page title and right-side status indicators
 
 import { useLocation } from 'react-router-dom'
-import { Bell, Activity } from 'lucide-react'
 import { useAuth } from '../../hooks/useAuth'
-import { DUMMY_ALERTS, DUMMY_STATS } from '../../data/dummyData'
+import { useAlerts } from '../../hooks/useAlerts'
+import { useAgents } from '../../hooks/useAgents'
 
 export function Topbar() {
   const location = useLocation()
   const { client } = useAuth()
+  const { alerts } = useAlerts('all')
+  const { overview } = useAgents('all')
 
   // Map routes to titles
   const routeTitles = {
@@ -23,7 +25,8 @@ export function Topbar() {
   const pageTitle = routeTitles[location.pathname] || 'Dashboard'
 
   // Count unacknowledged alerts
-  const unacknowledgedCount = DUMMY_ALERTS.filter(a => !a.acknowledged).length
+  const unacknowledgedCount = (alerts || []).filter((a) => !a.acknowledged).length
+  const activeAgents = Number(overview?.active_agents || 0)
 
   return (
     <header className="hidden md:block fixed top-0 right-0 left-60 h-16 bg-white border-b border-border px-8 z-10">
@@ -31,27 +34,10 @@ export function Topbar() {
         <h2 className="text-xl font-bold text-brown-primary">{pageTitle}</h2>
 
         <div className="flex items-center gap-4">
-          {/* Agents active indicator */}
-          <div className="flex items-center gap-2">
-            <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse"></div>
-            <span className="text-sm text-brown-secondary">{DUMMY_STATS.agents_active} agents active</span>
+          {/* Agents active indicator (dot only) */}
+          <div className="flex items-center gap-2" aria-hidden>
+            <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
           </div>
-
-          {/* Divider */}
-          <div className="w-px h-5 bg-border"></div>
-
-          {/* Alert bell */}
-          <div className="relative">
-            <Bell className="w-5 h-5 text-brown-secondary cursor-pointer hover:text-brown-primary transition-colors" />
-            {unacknowledgedCount > 0 && (
-              <span className="absolute -top-1 -right-2 bg-red-500 text-white text-xs rounded-full w-5 h-5 flex items-center justify-center font-bold">
-                {unacknowledgedCount}
-              </span>
-            )}
-          </div>
-
-          {/* Divider */}
-          <div className="w-px h-5 bg-border"></div>
 
           {/* Client info */}
           <div className="flex items-center gap-2">

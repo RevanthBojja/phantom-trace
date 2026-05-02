@@ -56,7 +56,7 @@ export function ChatMessage({ message, isUser }) {
               <div className="flex items-center gap-2">
                 {message.agent && (
                   <span className="bg-orange-tint text-orange-DEFAULT px-2 py-0.5 rounded-full font-medium">
-                    {message.agent} agent
+                    {message.agent === 'chat' ? 'Chat mode' : `${message.agent} agent`}
                   </span>
                 )}
                 {message.timestamp && <span>{timeAgo(message.timestamp)}</span>}

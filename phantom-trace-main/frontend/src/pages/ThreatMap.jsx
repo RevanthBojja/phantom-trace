@@ -4,18 +4,9 @@
 import { useEffect, useMemo, useState } from 'react'
 import { motion } from 'framer-motion'
 import { useThreatMap } from '../hooks/useThreatMap'
+import { ComposableMap, Geographies, Geography, Graticule, Marker, Sphere } from 'react-simple-maps'
 
-const WORLD_MAP_IMAGE =
-  'https://upload.wikimedia.org/wikipedia/commons/8/80/World_map_-_low_resolution.svg'
-
-function projectToPercent(lat, lng) {
-  const x = ((lng + 180) / 360) * 100
-  const y = ((90 - lat) / 180) * 100
-  return {
-    x: Math.max(3, Math.min(97, x)),
-    y: Math.max(6, Math.min(94, y)),
-  }
-}
+const GEO_URL = 'https://cdn.jsdelivr.net/npm/world-atlas@2/countries-110m.json'
 
 export default function ThreatMap() {
   const [selectedMarker, setSelectedMarker] = useState(null)
@@ -71,6 +62,15 @@ export default function ThreatMap() {
       return acc
     },
     { critical: 0, high: 0, medium: 0, low: 0 }
+  )
+
+  const mapMarkers = useMemo(
+    () =>
+      markerLocations.map((location) => ({
+        ...location,
+        coordinates: [location.lng || 0, location.lat || 0],
+      })),
+    [markerLocations]
   )
 
   const handlePresetFilter = (nextFilter) => {
@@ -217,68 +217,80 @@ export default function ThreatMap() {
           <motion.div
             initial={{ opacity: 0, y: 10 }}
             animate={{ opacity: 1, y: 0 }}
-            className="card p-0 overflow-hidden rounded-card mb-6 h-[26rem] bg-slate-950 relative"
+            className="card p-0 overflow-hidden rounded-card mb-6 h-[42rem] lg:h-[54rem] relative border border-slate-800/70 bg-slate-950 shadow-[0_24px_80px_rgba(15,23,42,0.25)]"
           >
-            <img
-              src={WORLD_MAP_IMAGE}
-              alt="World map"
-              className="w-full h-full object-cover opacity-75"
-            />
+            <div className="absolute inset-0 bg-[radial-gradient(circle_at_top,rgba(248,113,113,0.16),transparent_30%),radial-gradient(circle_at_bottom_right,rgba(59,130,246,0.14),transparent_26%),linear-gradient(180deg,#020617_0%,#0f172a_100%)]" />
 
-            <div className="absolute inset-0 bg-gradient-to-b from-slate-950/15 via-transparent to-slate-950/30" />
+            <ComposableMap
+              projection="geoEqualEarth"
+              projectionConfig={{ scale: 170 }}
+              className="absolute inset-0 h-full w-full"
+              style={{ width: '100%', height: '100%' }}
+            >
+              <Sphere stroke="#334155" strokeWidth={0.7} fill="#0f172a" />
+              <Graticule stroke="rgba(148,163,184,0.16)" strokeWidth={0.4} />
 
-            <div className="absolute inset-0 pointer-events-none">
-              {markerLocations.map((loc, markerIndex) => {
-                const point = projectToPercent(loc.lat || 0, loc.lng || 0)
+              <Geographies geography={GEO_URL}>
+                {({ geographies }) =>
+                  geographies.map((geo) => (
+                    <Geography
+                      key={geo.rsmKey}
+                      geography={geo}
+                      fill="#1f2937"
+                      stroke="#cbd5e1"
+                      strokeWidth={0.35}
+                      style={{
+                        default: { outline: 'none', filter: 'drop-shadow(0 0 0 rgba(0,0,0,0))' },
+                        hover: { outline: 'none', fill: '#243041' },
+                        pressed: { outline: 'none' },
+                      }}
+                    />
+                  ))
+                }
+              </Geographies>
+
+              {mapMarkers.map((loc, markerIndex) => {
                 const isSelected = selectedMarker === loc.country
-                const markerSize = Math.min(26, 10 + loc.count * 2)
+                const markerSize = Math.min(30, 12 + loc.count * 2)
 
                 return (
-                  <button
-                    key={loc.country}
-                    type="button"
-                    onClick={() => setSelectedMarker(isSelected ? null : loc.country)}
-                    className="pointer-events-auto absolute -translate-x-1/2 -translate-y-1/2"
-                    style={{ left: `${point.x}%`, top: `${point.y}%` }}
-                    aria-label={`Show threats for ${loc.country}. Marker ${markerIndex + 1}. Count ${loc.count}`}
-                  >
-                    <span
-                      className={`pointer-events-none absolute rounded-full bg-red-500/35 animate-ping ${
-                        isSelected ? 'opacity-95' : 'opacity-65'
-                      }`}
-                      style={{ width: `${markerSize + 12}px`, height: `${markerSize + 12}px`, left: '-6px', top: '-6px' }}
-                    />
-                    <span
-                      className={`relative flex items-center justify-center rounded-full border-2 border-white text-white font-bold shadow-lg ${
-                        isSelected ? 'bg-red-700' : 'bg-red-500'
-                      }`}
-                      style={{ width: `${markerSize}px`, height: `${markerSize}px`, fontSize: '10px' }}
-                    >
-                      {markerIndex + 1}
-                    </span>
-                  </button>
+                  <Marker key={loc.country} coordinates={loc.coordinates}>
+                    <g onClick={() => setSelectedMarker(isSelected ? null : loc.country)} style={{ cursor: 'pointer' }}>
+                      <circle r={Math.max(8, markerSize / 2 + 6)} fill="rgba(248,113,113,0.10)" />
+                      <circle r={Math.max(6, markerSize / 2)} fill={isSelected ? '#7f1d1d' : '#ef4444'} stroke="#fff" strokeWidth={2.2} />
+                      <text x={0} y={4} textAnchor="middle" fontSize={10} fill="#fff" fontWeight={800}>{markerIndex + 1}</text>
+                    </g>
+                  </Marker>
                 )
               })}
-            </div>
+            </ComposableMap>
 
-            <div className="absolute left-4 top-4 right-4 flex items-start justify-between gap-3 pointer-events-none">
-              <div className="bg-slate-950/75 border border-slate-700 rounded-lg px-3 py-2">
-                <p className="text-slate-100 text-sm font-semibold">World Threat Map</p>
-                <p className="text-slate-300 text-xs">MongoDB events in {timeFilter === 'custom' ? 'custom calendar' : timeFilter} window</p>
-                <p className="text-slate-400 text-[11px] mt-1">Unknown origins are listed below and not pinned on the map.</p>
+            <div className="absolute inset-0 bg-gradient-to-b from-slate-950/10 via-transparent to-slate-950/25 pointer-events-none" />
+
+            <div className="absolute inset-x-4 top-4 flex items-start justify-between gap-3 pointer-events-none">
+              <div className="max-w-[28rem] rounded-2xl border border-white/10 bg-slate-950/65 px-4 py-3 backdrop-blur-md shadow-lg shadow-slate-950/30">
+                <p className="text-slate-50 text-base font-semibold tracking-tight">World Threat Map</p>
+                <p className="text-slate-300 text-sm mt-0.5">MongoDB events in {timeFilter === 'custom' ? 'custom calendar' : timeFilter} window</p>
+                <p className="text-slate-400 text-xs mt-1">Unknown origins are listed below and not pinned on the map.</p>
               </div>
 
               {selectedMarker && (
-                <div className="bg-red-950/80 border border-red-700 rounded-lg px-3 py-2 text-right">
-                  <p className="text-red-100 text-xs">Selected Origin</p>
-                  <p className="text-white text-sm font-semibold">{selectedMarker}</p>
+                <div className="rounded-2xl border border-red-400/20 bg-red-950/80 px-4 py-3 backdrop-blur-md shadow-lg shadow-red-950/25 text-right">
+                  <p className="text-red-100 text-xs uppercase tracking-[0.16em]">Selected Origin</p>
+                  <p className="text-white text-lg font-semibold leading-tight">{selectedMarker}</p>
                 </div>
               )}
             </div>
 
+            {mapMarkers.length > 0 && (
+              <div className="absolute bottom-4 left-4 rounded-2xl border border-white/10 bg-slate-950/65 px-3 py-2 backdrop-blur-md text-xs text-slate-300 pointer-events-none">
+                Click a marker to inspect related events
+              </div>
+            )}
+
             {!locations.length && (
               <div className="absolute inset-0 flex items-center justify-center">
-                <div className="bg-slate-950/80 border border-slate-700 rounded-lg px-4 py-3">
+                <div className="rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 backdrop-blur-md shadow-lg">
                   <p className="text-slate-200 text-sm">No geolocated threats for this filter.</p>
                 </div>
               </div>

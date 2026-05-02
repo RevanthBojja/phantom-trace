@@ -7,7 +7,7 @@ import { Link } from 'react-router-dom'
 import { motion } from 'framer-motion'
 import { ArrowRight, CheckCircle } from 'lucide-react'
 import { SeverityBadge } from './SeverityBadge'
-import { timeAgo, severityBorderClass } from '../../utils/helpers'
+import { formatToIST, severityBorderClass } from '../../utils/helpers'
 import clsx from 'clsx'
 
 export function AlertCard({ alert, compact = false, fromPath = null }) {
@@ -49,7 +49,7 @@ export function AlertCard({ alert, compact = false, fromPath = null }) {
             <div className="flex items-center gap-2 ml-3">
               <SeverityBadge label={alert.severity_label} size="sm" />
               <span className="text-xs text-brown-secondary whitespace-nowrap">
-                {timeAgo(alert.created_at)}
+                {formatToIST(alert.created_at)}
               </span>
             </div>
           </div>

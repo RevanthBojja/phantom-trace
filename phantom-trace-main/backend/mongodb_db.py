@@ -97,6 +97,7 @@ def initialize_collections() -> None:
     agent_results.create_index([("thread_id", ASCENDING), ("created_at", DESCENDING)])
     agent_results.create_index([("agent_name", ASCENDING)])
     agent_results.create_index([("created_at", DESCENDING)])
+    agent_results.create_index([("owner_user_id", ASCENDING), ("thread_id", ASCENDING), ("created_at", DESCENDING)])
 
     # 2. Threat Events Collection
     if "threat_events" not in collections:
@@ -108,6 +109,7 @@ def initialize_collections() -> None:
     threat_events.create_index([("log_type", ASCENDING)])
     threat_events.create_index([("log_source", ASCENDING)])
     threat_events.create_index([("created_at", DESCENDING)])
+    threat_events.create_index([("owner_user_id", ASCENDING), ("thread_id", ASCENDING), ("created_at", DESCENDING)])
 
     # 3. Agent Flags Collection
     if "agent_flags" not in collections:
@@ -119,6 +121,7 @@ def initialize_collections() -> None:
     agent_flags.create_index([("thread_id", ASCENDING), ("created_at", DESCENDING)])
     agent_flags.create_index([("flag_key", ASCENDING)])
     agent_flags.create_index([("enabled", ASCENDING)])
+    agent_flags.create_index([("owner_user_id", ASCENDING), ("thread_id", ASCENDING), ("agent_name", ASCENDING)])
 
     # 4. Network Agent States Collection
     if "network_agent_states" not in collections:
@@ -154,6 +157,27 @@ def initialize_collections() -> None:
 
 # ==================== AGENT RESULTS OPERATIONS ====================
 
+def _with_owner_scope(base_query: Dict[str, Any], owner_user_id: Optional[str]) -> Dict[str, Any]:
+    scoped_query = dict(base_query)
+    if owner_user_id:
+        scoped_query["owner_user_id"] = owner_user_id
+    return scoped_query
+
+
+def _is_all_threads(thread_id: str) -> bool:
+    normalized = (thread_id or "").strip().lower()
+    return normalized in ("", "all", "*")
+
+
+def _thread_scope_query(thread_id: str, owner_user_id: Optional[str] = None) -> Dict[str, Any]:
+    query: Dict[str, Any] = {}
+    if owner_user_id:
+        query["owner_user_id"] = owner_user_id
+    if not _is_all_threads(thread_id):
+        query["thread_id"] = thread_id.strip()
+    return query
+
+
 def store_agent_result(
     *,
     thread_id: str,
@@ -161,6 +185,7 @@ def store_agent_result(
     user_message: str,
     raw_response: str,
     parsed_response: Dict[str, Any],
+    owner_user_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Store agent result in MongoDB"""
     db = MongoDBConnection.get_database()
@@ -174,19 +199,21 @@ def store_agent_result(
         "parsed_response": parsed_response,
         "created_at": datetime.now(timezone.utc),
     }
+    if owner_user_id:
+        record["owner_user_id"] = owner_user_id
 
     result = collection.insert_one(record)
     record["_id"] = result.inserted_id
     return record
 
 
-def get_cached_agent_results(thread_id: str, limit: int = 100) -> List[Dict[str, Any]]:
+def get_cached_agent_results(thread_id: str, limit: int = 100, owner_user_id: Optional[str] = None) -> List[Dict[str, Any]]:
     """Retrieve cached agent results for a thread"""
     db = MongoDBConnection.get_database()
     collection = db["agent_results"]
 
     results = list(
-        collection.find({"thread_id": thread_id})
+        collection.find(_thread_scope_query(thread_id, owner_user_id))
         .sort("created_at", ASCENDING)
         .limit(limit)
     )
@@ -194,13 +221,13 @@ def get_cached_agent_results(thread_id: str, limit: int = 100) -> List[Dict[str,
     return results
 
 
-def combine_cached_agent_results(thread_id: str) -> Dict[str, Any]:
+def combine_cached_agent_results(thread_id: str, owner_user_id: Optional[str] = None) -> Dict[str, Any]:
     """Combine all cached agent results for a thread"""
     db = MongoDBConnection.get_database()
     collection = db["agent_results"]
 
     cached_results = list(
-        collection.find({"thread_id": thread_id})
+        collection.find(_thread_scope_query(thread_id, owner_user_id))
         .sort("created_at", ASCENDING)
     )
 
@@ -248,6 +275,7 @@ def store_threat_event(
     log_source: str,
     log_type: str,
     event_payload: Dict[str, Any],
+    owner_user_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Store threat event in MongoDB"""
     db = MongoDBConnection.get_database()
@@ -260,19 +288,21 @@ def store_threat_event(
         "event_payload": event_payload,
         "created_at": datetime.now(timezone.utc),
     }
+    if owner_user_id:
+        record["owner_user_id"] = owner_user_id
 
     result = collection.insert_one(record)
     record["_id"] = result.inserted_id
     return record
 
 
-def get_threat_events(thread_id: str, limit: int = 25) -> List[Dict[str, Any]]:
+def get_threat_events(thread_id: str, limit: int = 25, owner_user_id: Optional[str] = None) -> List[Dict[str, Any]]:
     """Retrieve threat events for a thread"""
     db = MongoDBConnection.get_database()
     collection = db["threat_events"]
 
     events = list(
-        collection.find({"thread_id": thread_id})
+        collection.find(_thread_scope_query(thread_id, owner_user_id))
         .sort("created_at", DESCENDING)
         .limit(limit)
     )
@@ -280,20 +310,24 @@ def get_threat_events(thread_id: str, limit: int = 25) -> List[Dict[str, Any]]:
     return events
 
 
-def get_latest_threat_event(thread_id: str) -> Optional[Dict[str, Any]]:
+def get_latest_threat_event(thread_id: str, owner_user_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
     """Get the most recent threat event for a thread"""
     db = MongoDBConnection.get_database()
     collection = db["threat_events"]
 
     event = collection.find_one(
-        {"thread_id": thread_id},
+        _thread_scope_query(thread_id, owner_user_id),
         sort=[("created_at", DESCENDING)]
     )
 
     return event
 
 
-def get_latest_threat_event_for_agent(thread_id: str, agent_name: str) -> Optional[Dict[str, Any]]:
+def get_latest_threat_event_for_agent(
+    thread_id: str,
+    agent_name: str,
+    owner_user_id: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
     """
     Get the most recent event for a specific agent's domain.
     Falls back to latest event if no preferred type found.
@@ -311,7 +345,7 @@ def get_latest_threat_event_for_agent(thread_id: str, agent_name: str) -> Option
     }
 
     events = list(
-        collection.find({"thread_id": thread_id})
+        collection.find(_thread_scope_query(thread_id, owner_user_id))
         .sort("created_at", DESCENDING)
         .limit(50)
     )
@@ -339,6 +373,7 @@ def store_agent_flags(
     thread_id: str,
     agent_name: str,
     flags: List[Dict[str, Any]],
+    owner_user_id: Optional[str] = None,
 ) -> None:
     """Store/update agent flags in MongoDB"""
     db = MongoDBConnection.get_database()
@@ -346,9 +381,15 @@ def store_agent_flags(
 
     normalized_agent = agent_name.strip().lower()
     created_at = datetime.now(timezone.utc)
+    delete_query: Dict[str, Any] = {
+        "thread_id": thread_id,
+        "agent_name": normalized_agent,
+    }
+    if owner_user_id:
+        delete_query["owner_user_id"] = owner_user_id
 
     # Delete existing flags for this agent
-    collection.delete_many({"thread_id": thread_id, "agent_name": normalized_agent})
+    collection.delete_many(delete_query)
 
     # Insert new flags
     for flag in flags:
@@ -361,17 +402,18 @@ def store_agent_flags(
                 "confidence": float(flag.get("confidence", 0.0)),
                 "evidence": flag.get("evidence"),
                 "created_at": created_at,
+                "owner_user_id": owner_user_id,
             }
         )
 
 
-def get_enabled_flags(thread_id: str) -> Dict[str, List[Dict[str, Any]]]:
+def get_enabled_flags(thread_id: str, owner_user_id: Optional[str] = None) -> Dict[str, List[Dict[str, Any]]]:
     """Get all enabled flags for a thread, grouped by agent"""
     db = MongoDBConnection.get_database()
     collection = db["agent_flags"]
 
     flags = list(
-        collection.find({"thread_id": thread_id, "enabled": True})
+        collection.find(_thread_scope_query(thread_id, owner_user_id) | {"enabled": True})
         .sort([("agent_name", ASCENDING), ("confidence", DESCENDING)])
     )
 
@@ -391,13 +433,13 @@ def get_enabled_flags(thread_id: str) -> Dict[str, List[Dict[str, Any]]]:
     return by_agent
 
 
-def get_all_flags(thread_id: str) -> Dict[str, List[Dict[str, Any]]]:
+def get_all_flags(thread_id: str, owner_user_id: Optional[str] = None) -> Dict[str, List[Dict[str, Any]]]:
     """Get all flags (enabled and disabled) for a thread"""
     db = MongoDBConnection.get_database()
     collection = db["agent_flags"]
 
     flags = list(
-        collection.find({"thread_id": thread_id})
+        collection.find(_thread_scope_query(thread_id, owner_user_id))
         .sort([("agent_name", ASCENDING), ("enabled", DESCENDING)])
     )
 
@@ -557,13 +599,18 @@ def update_session(thread_id: str, updates: Dict[str, Any]) -> Optional[Dict[str
 
 # ==================== EXPLAINER CONTEXT ====================
 
-def build_explainer_context(thread_id: str, user_message: str) -> str:
+def build_explainer_context(thread_id: str, user_message: str, owner_user_id: Optional[str] = None) -> str:
     """Build context for explainer agent from all cached data"""
-    combined_results = combine_cached_agent_results(thread_id)
-    enabled_flags = get_enabled_flags(thread_id)
-    latest_event = get_latest_threat_event(thread_id)
+    combined_results = combine_cached_agent_results(thread_id, owner_user_id=owner_user_id)
+    enabled_flags = get_enabled_flags(thread_id, owner_user_id=owner_user_id)
+    threat_events = get_threat_events(thread_id, limit=7, owner_user_id=owner_user_id)
 
-    if not combined_results["by_agent"] and not enabled_flags and not latest_event:
+    if not combined_results["by_agent"] and not enabled_flags and not threat_events and not _is_all_threads(thread_id):
+        combined_results = combine_cached_agent_results("all", owner_user_id=owner_user_id)
+        enabled_flags = get_enabled_flags("all", owner_user_id=owner_user_id)
+        threat_events = get_threat_events("all", limit=7, owner_user_id=owner_user_id)
+
+    if not combined_results["by_agent"] and not enabled_flags and not threat_events:
         return user_message.strip()
 
     # Format agent results
@@ -598,18 +645,29 @@ def build_explainer_context(thread_id: str, user_message: str) -> str:
     else:
         flag_lines.append("- No enabled flags recorded for this thread")
 
-    # Format threat event
-    event_block = "No stored threat event found for this thread."
-    if latest_event:
+    # Format threat events (recent history, not just latest)
+    event_block = "No stored threat events found for this thread."
+    if threat_events:
+        event_lines = []
+        for idx, event in enumerate(threat_events, 1):
+            event_summary = (
+                f"{idx}. [{event['log_type'].upper()}] {event['log_source']} - "
+                f"{event['event_payload'].get('severity', 'UNKNOWN')} - "
+                f"{event['event_payload'].get('action', 'unknown action')}"
+            )
+            event_lines.append(event_summary)
+        event_list = "\n".join(event_lines)
         event_block = (
-            f"Latest event source/type: {latest_event['log_source']}/{latest_event['log_type']}\n"
-            f"Event payload: {json.dumps(latest_event['event_payload'], ensure_ascii=True)}"
+            f"Recent threat events (newest first):\n{event_list}\n\n"
+            f"Full details of latest event:\n"
+            f"  Source/Type: {threat_events[0]['log_source']}/{threat_events[0]['log_type']}\n"
+            f"  Payload: {json.dumps(threat_events[0]['event_payload'], ensure_ascii=True)}"
         )
 
     return (
         "Use the cached specialist findings below as primary context before answering.\n\n"
         f"Thread ID: {thread_id}\n"
-        f"Latest threat event:\n{event_block}\n\n"
+        f"Recent threat events:\n{event_block}\n\n"
         f"Enabled flags:\n{'\n'.join(flag_lines)}\n\n"
         f"Cached specialist findings:\n{cache_block}\n\n"
         f"User request:\n{user_message.strip()}"

@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 from pydantic import BaseModel
 
 from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain_core.messages import BaseMessage
+from langchain_core.messages import BaseMessage, SystemMessage
 from langchain.agents import AgentState, create_agent
 from langchain.tools import tool, ToolRuntime
 from langchain.messages import ToolMessage, HumanMessage
@@ -71,6 +71,20 @@ def safe_invoke(agent, input_dict, config):
     return agent.invoke(input_dict, config)
 
 
+def _content_to_text(content) -> str:
+    if isinstance(content, str):
+        return content.strip()
+    if isinstance(content, list):
+        text_parts = []
+        for part in content:
+            if isinstance(part, dict) and part.get("type") == "text":
+                txt = part.get("text", "")
+                if txt:
+                    text_parts.append(txt)
+        return "\n".join(text_parts).strip()
+    return str(content).strip()
+
+
 def read(response):
     if isinstance(response, dict) and response.get("structured_response") is not None:
         structured = response["structured_response"]
@@ -80,18 +94,10 @@ def read(response):
             return json.dumps(structured, indent=2)
         return str(structured)
 
-    def _content_to_text(content) -> str:
-        if isinstance(content, str):
-            return content.strip()
-        if isinstance(content, list):
-            text_parts = []
-            for part in content:
-                if isinstance(part, dict) and part.get("type") == "text":
-                    txt = part.get("text", "")
-                    if txt:
-                        text_parts.append(txt)
-            return "\n".join(text_parts).strip()
-        return str(content).strip()
+    if hasattr(response, "content"):
+        text = _content_to_text(response.content)
+        if text:
+            return text
 
     if isinstance(response, dict) and "messages" in response:
         messages = response["messages"]
@@ -112,6 +118,29 @@ def read(response):
                 return text
 
     return str(response)
+
+
+def invoke_explainer_chat(user_message: str, context: str = "") -> str:
+    """Generate a plain-language response grounded in the supplied context."""
+    system_prompt = (
+        "You are PhantomTrace's conversational security assistant. "
+        "Answer in natural, human language. "
+        "Do not return JSON, YAML, or structured sections unless the user explicitly asks for them. "
+        "Use the provided telemetry context to ground your answer, and be concise but helpful."
+    )
+
+    prompt_parts = []
+    if context.strip():
+        prompt_parts.append(f"Context:\n{context.strip()}")
+    prompt_parts.append(f"User request:\n{user_message.strip()}")
+
+    response = model.invoke(
+        [
+            SystemMessage(content=system_prompt),
+            HumanMessage(content="\n\n".join(prompt_parts)),
+        ]
+    )
+    return read(response)
 
 
 @tool

@@ -2,11 +2,8 @@
 // Semicircular arc gauge showing current maximum severity score
 // Uses SVG for the gauge visualization
 
-import { DUMMY_STATS, DUMMY_ALERTS } from '../../data/dummyData'
-
-export function SeverityGauge() {
-  // Find max severity score
-  const maxSeverity = Math.max(...DUMMY_ALERTS.map(a => a.severity_score))
+export function SeverityGauge({ maxSeverityScore = 0 }) {
+  const maxSeverity = Math.max(0, Number(maxSeverityScore || 0))
   const percentage = (maxSeverity / 10) * 100
 
   // Determine color based on severity

@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { apiJson } from '../utils/apiClient'
 
-export function useAgents(threadId = 'default') {
+export function useAgents(threadId = 'all') {
   const [agents, setAgents] = useState([])
   const [overview, setOverview] = useState(null)
   const [pipeline, setPipeline] = useState(null)

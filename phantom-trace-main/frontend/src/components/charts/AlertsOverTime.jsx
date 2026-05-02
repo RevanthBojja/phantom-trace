@@ -5,9 +5,8 @@
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer
 } from 'recharts'
-import { DUMMY_STATS } from '../../data/dummyData'
 
-export function AlertsOverTime() {
+export function AlertsOverTime({ data = [] }) {
   const CustomTooltip = ({ active, payload }) => {
     if (active && payload?.[0]) {
       return (
@@ -29,7 +28,7 @@ export function AlertsOverTime() {
       <h3 className="font-semibold text-brown-primary mb-4">Alerts (Last 24 Hours)</h3>
       <ResponsiveContainer width="100%" height={180}>
         <BarChart
-          data={DUMMY_STATS.alerts_by_hour}
+          data={data}
           margin={{ top: 5, right: 20, left: -20, bottom: 5 }}
         >
           <CartesianGrid strokeDasharray="3 3" stroke="#EDE8E0" vertical={false} />

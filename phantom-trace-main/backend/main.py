@@ -5,12 +5,13 @@ from pydantic import BaseModel
 from typing import Any, Dict, List, Literal, Optional
 from datetime import datetime, timedelta, timezone
 import ipaddress
+import json
 import uvicorn
 from network_agent import invoke_network_agent_async
 from auth_agent import invoke_auth_agent
 from behavioural_agent import invoke_behavioural_agent
 from orchestrator_agent import invoke_orchestrator_agent
-from explainer_agent import invoke_explainer_agent
+from explainer_agent import invoke_explainer_agent, invoke_explainer_chat
 from auth_service import (
     AuthError,
     create_user_api_key,
@@ -122,6 +123,7 @@ class ExplainerAgentResponse(BaseModel):
 class UnifiedChatRequest(BaseModel):
     message: str
     agent: Literal["network", "auth", "behavioural", "orchestrator", "explainer"] = "orchestrator"
+    mode: Literal["agent", "chat"] = "agent"
     thread_id: str = "1"
 
 
@@ -130,6 +132,7 @@ class UnifiedChatResponse(BaseModel):
     thread_id: str
     status: str
     agent: str
+    mode: str
     thinking_steps: List[str]
 
 
@@ -292,6 +295,29 @@ def _normalize_agent_name(agent_name: str) -> Optional[str]:
     return AGENT_NAME_ALIASES.get(agent_name.strip().lower())
 
 
+def _owner_user_id(current_user: Dict[str, Any]) -> str:
+    """Normalize authenticated user ID for ownership-scoped writes and reads."""
+    raw_value = current_user.get("_id") if isinstance(current_user, dict) else None
+    if raw_value is None and isinstance(current_user, dict):
+        raw_value = current_user.get("id")
+    return str(raw_value) if raw_value is not None else ""
+
+
+def _is_all_threads(thread_id: str) -> bool:
+    normalized = (thread_id or "").strip().lower()
+    return normalized in ("", "all", "*")
+
+
+def _build_user_thread_query(current_user: Dict[str, Any], thread_id: str) -> Dict[str, Any]:
+    query: Dict[str, Any] = {}
+    owner_id = _owner_user_id(current_user)
+    if owner_id:
+        query["owner_user_id"] = owner_id
+    if not _is_all_threads(thread_id):
+        query["thread_id"] = thread_id
+    return query
+
+
 def _severity_to_score(severity_label: str) -> float:
     return SEVERITY_SCORE_MAP.get((severity_label or "MEDIUM").upper(), SEVERITY_SCORE_MAP["MEDIUM"])
 
@@ -397,8 +423,58 @@ def _thinking_steps_for_agent(agent: str) -> List[str]:
     return base_steps
 
 
-async def _invoke_selected_agent(agent: str, message: str, thread_id: str) -> str:
-    latest_event = get_latest_threat_event_for_agent(thread_id, agent)
+def _extract_event_payload_from_message(message: str) -> Optional[Dict[str, Any]]:
+    """Best-effort parse of direct JSON telemetry sent in chat/agent message fields."""
+    if not message:
+        return None
+
+    candidate = message.strip()
+    if not candidate.startswith("{"):
+        return None
+
+    try:
+        payload = json.loads(candidate)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
+
+    if isinstance(payload, dict):
+        return payload
+    return None
+
+
+def _ingest_event_from_agent_message(
+    thread_id: str,
+    agent: str,
+    message: str,
+    owner_user_id: Optional[str] = None,
+) -> None:
+    """
+    Persist structured event payloads to threat_events when callers send raw JSON
+    directly to specialist endpoints instead of /events/ingest.
+    """
+    event_payload = _extract_event_payload_from_message(message)
+    if not event_payload:
+        return
+
+    inferred_log_source = str(event_payload.get("log_source") or agent).strip().lower() or agent
+    inferred_log_type = str(event_payload.get("log_type") or agent).strip().lower() or agent
+
+    store_threat_event(
+        thread_id=thread_id,
+        log_source=inferred_log_source,
+        log_type=inferred_log_type,
+        event_payload=event_payload,
+        owner_user_id=owner_user_id,
+    )
+
+
+async def _invoke_selected_agent(
+    agent: str,
+    message: str,
+    thread_id: str,
+    owner_user_id: Optional[str] = None,
+) -> str:
+    latest_event = get_latest_threat_event_for_agent(thread_id, agent, owner_user_id=owner_user_id)
     contextual_message = message
     if latest_event:
         contextual_message = (
@@ -423,8 +499,24 @@ async def _invoke_selected_agent(agent: str, message: str, thread_id: str) -> st
     raise ValueError(f"Unsupported agent: {agent}")
 
 
-async def _invoke_and_cache_agent(agent: str, message: str, thread_id: str) -> str:
-    agent_response = await _invoke_selected_agent(agent=agent, message=message, thread_id=thread_id)
+async def _invoke_and_cache_agent(
+    agent: str,
+    message: str,
+    thread_id: str,
+    owner_user_id: Optional[str] = None,
+) -> str:
+    _ingest_event_from_agent_message(
+        thread_id=thread_id,
+        agent=agent,
+        message=message,
+        owner_user_id=owner_user_id,
+    )
+    agent_response = await _invoke_selected_agent(
+        agent=agent,
+        message=message,
+        thread_id=thread_id,
+        owner_user_id=owner_user_id,
+    )
     parsed_response = parse_agent_response(agent_response)
     store_agent_result(
         thread_id=thread_id,
@@ -432,15 +524,42 @@ async def _invoke_and_cache_agent(agent: str, message: str, thread_id: str) -> s
         user_message=message,
         raw_response=agent_response,
         parsed_response=parsed_response,
+        owner_user_id=owner_user_id,
     )
     inferred_flags = infer_flags_from_agent_response(agent_name=agent, raw_response=agent_response)
-    store_agent_flags(thread_id=thread_id, agent_name=agent, flags=inferred_flags)
+    store_agent_flags(
+        thread_id=thread_id,
+        agent_name=agent,
+        flags=inferred_flags,
+        owner_user_id=owner_user_id,
+    )
     return agent_response
 
 
-def _invoke_explainer_with_context(message: str, thread_id: str) -> str:
-    contextual_message = build_explainer_context(thread_id=thread_id, user_message=message)
+def _invoke_explainer_with_context(
+    message: str,
+    thread_id: str,
+    owner_user_id: Optional[str] = None,
+) -> str:
+    contextual_message = build_explainer_context(
+        thread_id=thread_id,
+        user_message=message,
+        owner_user_id=owner_user_id,
+    )
     return invoke_explainer_agent(user_message=contextual_message, thread_id=thread_id)
+
+
+def _invoke_chat_mode_with_context(
+    message: str,
+    thread_id: str,
+    owner_user_id: Optional[str] = None,
+) -> str:
+    contextual_message = build_explainer_context(
+        thread_id=thread_id,
+        user_message=message,
+        owner_user_id=owner_user_id,
+    )
+    return invoke_explainer_chat(user_message=message, context=contextual_message)
 
 
 @app.get("/")
@@ -557,6 +676,7 @@ async def ingest_event(
             log_source=request.log_source,
             log_type=request.log_type,
             event_payload=request.event_payload,
+            owner_user_id=_owner_user_id(current_user),
         )
         return EventIngestResponse(
             thread_id=record["thread_id"],
@@ -576,7 +696,7 @@ async def get_latest_event(
 ):
     """Fetch the latest stored event for a thread."""
     try:
-        event = get_latest_threat_event(thread_id)
+        event = get_latest_threat_event(thread_id, owner_user_id=_owner_user_id(current_user))
         return LatestEventResponse(status="success", event=_to_json_safe(event) if event else None)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error loading latest event: {str(e)}")
@@ -599,25 +719,40 @@ async def unified_chat(
         if not request.message or not request.message.strip():
             raise HTTPException(status_code=400, detail="Message cannot be empty")
 
+        selected_mode = request.mode.lower().strip()
         selected_agent = request.agent.lower().strip()
-        thinking_steps = _thinking_steps_for_agent(selected_agent)
-        if selected_agent == "explainer":
-            agent_response = _invoke_explainer_with_context(
+
+        if selected_mode == "chat":
+            agent_response = _invoke_chat_mode_with_context(
                 message=request.message,
                 thread_id=request.thread_id,
+                owner_user_id=_owner_user_id(current_user),
             )
+            thinking_steps: List[str] = []
+            response_agent = "chat"
         else:
-            agent_response = await _invoke_and_cache_agent(
-                agent=selected_agent,
-                message=request.message,
-                thread_id=request.thread_id,
-            )
+            thinking_steps = _thinking_steps_for_agent(selected_agent)
+            if selected_agent == "explainer":
+                agent_response = _invoke_explainer_with_context(
+                    message=request.message,
+                    thread_id=request.thread_id,
+                    owner_user_id=_owner_user_id(current_user),
+                )
+            else:
+                agent_response = await _invoke_and_cache_agent(
+                    agent=selected_agent,
+                    message=request.message,
+                    thread_id=request.thread_id,
+                    owner_user_id=_owner_user_id(current_user),
+                )
+            response_agent = selected_agent
 
         return UnifiedChatResponse(
             response=agent_response,
             thread_id=request.thread_id,
             status="success",
-            agent=selected_agent,
+            agent=response_agent,
+            mode=selected_mode,
             thinking_steps=thinking_steps,
         )
     except HTTPException:
@@ -652,6 +787,7 @@ async def call_network_agent(
             agent="network",
             message=request.message,
             thread_id=request.thread_id,
+            owner_user_id=_owner_user_id(current_user),
         )
         
         return NetworkAgentResponse(
@@ -693,6 +829,7 @@ async def call_auth_agent(
             agent="auth",
             message=request.message,
             thread_id=request.thread_id,
+            owner_user_id=_owner_user_id(current_user),
         )
 
         return AuthAgentResponse(
@@ -734,6 +871,7 @@ async def call_behavioural_agent(
             agent="behavioural",
             message=request.message,
             thread_id=request.thread_id,
+            owner_user_id=_owner_user_id(current_user),
         )
 
         return BehaviouralAgentResponse(
@@ -775,6 +913,7 @@ async def call_orchestrator_agent(
             agent="orchestrator",
             message=request.message,
             thread_id=request.thread_id,
+            owner_user_id=_owner_user_id(current_user),
         )
 
         return OrchestratorAgentResponse(
@@ -815,6 +954,7 @@ async def call_explainer_agent(
         agent_response = _invoke_explainer_with_context(
             message=request.message,
             thread_id=request.thread_id,
+            owner_user_id=_owner_user_id(current_user),
         )
 
         return ExplainerAgentResponse(
@@ -836,7 +976,7 @@ from mongodb_db import MongoDBConnection
 
 @app.get("/api/alerts")
 async def get_alerts(
-    thread_id: str = "default",
+    thread_id: str = "all",
     limit: int = 100,
     current_user: Dict[str, Any] = Depends(require_authenticated_user),
 ):
@@ -853,13 +993,15 @@ async def get_alerts(
     try:
         db = MongoDBConnection.get_database()
         
-        # Fetch threat events and agent results for this thread
+        scoped_query = _build_user_thread_query(current_user, thread_id)
+
+        # Fetch threat events and agent results for this scope
         threat_events = list(db["threat_events"].find(
-            {"thread_id": thread_id}
+            scoped_query
         ).sort("created_at", -1).limit(limit))
         
         agent_results = list(db["agent_results"].find(
-            {"thread_id": thread_id}
+            scoped_query
         ).sort("created_at", -1).limit(limit))
         
         # Convert threat events to alert format
@@ -867,7 +1009,8 @@ async def get_alerts(
 
         event_id_counter = 1
         for event in threat_events:
-            alerts.append(_event_to_alert(event=event, alert_id=f"alert_{event_id_counter}", thread_id=thread_id))
+            event_thread_id = str(event.get("thread_id") or thread_id)
+            alerts.append(_event_to_alert(event=event, alert_id=f"alert_{event_id_counter}", thread_id=event_thread_id))
             event_id_counter += 1
         
         # Also include recent agent findings as alerts
@@ -890,7 +1033,7 @@ async def get_alerts(
             
             agent_finding = {
                 "_id": f"finding_{finding_id_counter}",
-                "thread_id": thread_id,
+                "thread_id": str(result.get("thread_id") or thread_id),
                 "severity_label": severity_label,
                 "severity_score": severity_score,
                 "attack_classification": f"{agent_name.title()} Finding",
@@ -927,7 +1070,7 @@ async def get_alerts(
 
 @app.get("/api/alerts/summary")
 async def get_alerts_summary(
-    thread_id: str = "default",
+    thread_id: str = "all",
     current_user: Dict[str, Any] = Depends(require_authenticated_user),
 ):
     """
@@ -939,7 +1082,8 @@ async def get_alerts_summary(
     try:
         db = MongoDBConnection.get_database()
         
-        threat_events = list(db["threat_events"].find({"thread_id": thread_id}))
+        scoped_query = _build_user_thread_query(current_user, thread_id)
+        threat_events = list(db["threat_events"].find(scoped_query))
 
         severity_counts = {"critical": 0, "high": 0, "medium": 0, "low": 0}
         total_score = 0.0
@@ -968,11 +1112,11 @@ async def get_alerts_summary(
 
         start_of_today = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
         logs_today = db["threat_events"].count_documents({
-            "thread_id": thread_id,
+            **scoped_query,
             "created_at": {"$gte": start_of_today},
         })
 
-        distinct_agent_names = db["agent_results"].distinct("agent_name", {"thread_id": thread_id})
+        distinct_agent_names = db["agent_results"].distinct("agent_name", scoped_query)
         active_agents = {
             normalized for normalized in (_normalize_agent_name(name) for name in distinct_agent_names) if normalized
         }
@@ -996,7 +1140,7 @@ async def get_alerts_summary(
 
 @app.get("/api/logs")
 async def get_logs(
-    thread_id: str = "default",
+    thread_id: str = "all",
     limit: int = 100,
     current_user: Dict[str, Any] = Depends(require_authenticated_user),
 ):
@@ -1013,9 +1157,11 @@ async def get_logs(
     try:
         db = MongoDBConnection.get_database()
         
+        scoped_query = _build_user_thread_query(current_user, thread_id)
+
         # Fetch threat events sorted by created_at descending
         threat_events = list(db["threat_events"].find(
-            {"thread_id": thread_id}
+            scoped_query
         ).sort("created_at", -1).limit(limit))
         
         # Convert threat events to log format
@@ -1023,7 +1169,7 @@ async def get_logs(
         for idx, event in enumerate(threat_events):
             log = {
                 "_id": f"log_{idx + 1}",
-                "thread_id": thread_id,
+                "thread_id": str(event.get("thread_id") or thread_id),
                 "log_type": event.get("log_type", "unknown"),
                 "source": event.get("log_source", "system"),
                 "source_ip": event.get("event_payload", {}).get("source_ip", ""),
@@ -1049,15 +1195,16 @@ async def get_logs(
 
 @app.get("/api/reports")
 async def get_reports(
-    thread_id: str = "default",
+    thread_id: str = "all",
     current_user: Dict[str, Any] = Depends(require_authenticated_user),
 ):
     """Compute reports page statistics directly from MongoDB threat and agent collections."""
     try:
         db = MongoDBConnection.get_database()
 
-        threat_events = list(db["threat_events"].find({"thread_id": thread_id}).sort("created_at", -1))
-        agent_results = list(db["agent_results"].find({"thread_id": thread_id}))
+        scoped_query = _build_user_thread_query(current_user, thread_id)
+        threat_events = list(db["threat_events"].find(scoped_query).sort("created_at", -1))
+        agent_results = list(db["agent_results"].find(scoped_query))
 
         severity_counts = {"critical": 0, "high": 0, "medium": 0, "low": 0}
         alerts_by_type: Dict[str, int] = {}
@@ -1115,7 +1262,13 @@ async def get_reports(
                         existing_ip["severityScore"] = severity_score
 
             if severity_label == "CRITICAL":
-                top_critical_alerts.append(_event_to_alert(event=event, alert_id=f"alert_{idx}", thread_id=thread_id))
+                top_critical_alerts.append(
+                    _event_to_alert(
+                        event=event,
+                        alert_id=f"alert_{idx}",
+                        thread_id=str(event.get("thread_id") or thread_id),
+                    )
+                )
 
         if not top_critical_alerts and threat_events:
             # Fall back to highest severity events when no CRITICAL events exist.
@@ -1125,7 +1278,11 @@ async def get_reports(
                 reverse=True,
             )
             top_critical_alerts = [
-                _event_to_alert(event=event, alert_id=f"alert_{idx+1}", thread_id=thread_id)
+                _event_to_alert(
+                    event=event,
+                    alert_id=f"alert_{idx+1}",
+                    thread_id=str(event.get("thread_id") or thread_id),
+                )
                 for idx, event in enumerate(sorted_events[:3])
             ]
 
@@ -1200,15 +1357,16 @@ async def get_reports(
 
 @app.get("/api/agents")
 async def get_agents(
-    thread_id: str = "default",
+    thread_id: str = "all",
     current_user: Dict[str, Any] = Depends(require_authenticated_user),
 ):
     """Fetch agent status and findings from MongoDB for AgentMonitor."""
     try:
         db = MongoDBConnection.get_database()
-        agent_results = list(db["agent_results"].find({"thread_id": thread_id}).sort("created_at", -1))
-        agent_flags = list(db["agent_flags"].find({"thread_id": thread_id, "enabled": True}).sort("confidence", -1))
-        threat_events = list(db["threat_events"].find({"thread_id": thread_id}).sort("created_at", -1).limit(500))
+        scoped_query = _build_user_thread_query(current_user, thread_id)
+        agent_results = list(db["agent_results"].find(scoped_query).sort("created_at", -1))
+        agent_flags = list(db["agent_flags"].find({**scoped_query, "enabled": True}).sort("confidence", -1))
+        threat_events = list(db["threat_events"].find(scoped_query).sort("created_at", -1).limit(500))
 
         now = datetime.now(timezone.utc)
         start_of_today = now.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -1522,6 +1680,10 @@ async def get_threat_map(
         query: Dict[str, Any] = {
             "created_at": {"$gte": range_start, "$lte": range_end}
         }
+        owner_id = _owner_user_id(current_user)
+        if owner_id:
+            query["owner_user_id"] = owner_id
+
         normalized_thread = (thread_id or "").strip().lower()
         if normalized_thread not in ("", "all", "*"):
             query["thread_id"] = thread_id

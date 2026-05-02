@@ -5,7 +5,7 @@
 import { useState, useMemo } from 'react'
 import { motion } from 'framer-motion'
 import { useLogs } from '../hooks/useLogs'
-import { truncate } from '../utils/helpers'
+import { formatToIST, truncate } from '../utils/helpers'
 import { Search, ChevronDown, ChevronUp, AlertTriangle } from 'lucide-react'
 
 function logTypeColors(logType) {
@@ -26,7 +26,7 @@ export default function LogExplorer() {
   const [expandedLog, setExpandedLog] = useState(null)
 
   // Fetch logs from MongoDB
-  const { logs, loading, error } = useLogs('default')
+  const { logs, loading, error } = useLogs('all')
 
   const logTypes = ['all', 'auth', 'network', 'process', 'dns', 'behavioral']
   const statuses = ['all', 'flagged', 'normal', 'success', 'failure']
@@ -173,7 +173,7 @@ export default function LogExplorer() {
                       className="w-full grid grid-cols-5 gap-4 py-3 px-0 text-left text-sm items-center"
                     >
                       <div className="font-mono text-brown-secondary text-xs">
-                        {new Date(log.timestamp).toLocaleTimeString()}
+                        {formatToIST(log.timestamp)}
                       </div>
                       <div>
                         <span

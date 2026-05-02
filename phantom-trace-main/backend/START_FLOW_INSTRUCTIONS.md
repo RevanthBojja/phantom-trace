@@ -6,7 +6,7 @@ Use this guide to run the full flow directly from the FastAPI docs page.
 
 1. Start backend server.
 2. Open `http://localhost:8000/docs`.
-3. Insert one log using `POST /events/ingest` (required first).
+3. Insert one log using `POST /events/ingest` (recommended first).
 4. Run orchestrator and specialist endpoints with the same `thread_id`.
 5. Run explainer with the same `thread_id`.
 
@@ -25,7 +25,7 @@ Then open:
 
 - `http://localhost:8000/docs`
 
-## 2) Insert Log First in Swagger UI (Required)
+## 2) Insert Log First in Swagger UI (Recommended)
 
 In `/docs`:
 
@@ -203,5 +203,6 @@ Use `POST /call-explainerAgent` in `/docs`:
 
 - If `/docs` does not open, confirm backend is running on port `8000`.
 - If responses are empty or unrelated, verify you used the same `thread_id` in every call.
-- Insert at least one event before running orchestrator/specialists.
+- Prefer inserting at least one event before running orchestrator/specialists.
+- If you skip `/events/ingest`, specialist endpoints can still auto-ingest when `message` is a JSON object string.
 - If auth agent asks for missing fields, ingest an auth event with `auth_method`, `auth_result`, `target_resource`, `mfa_bypassed`, and `login_timestamp`, then retry.

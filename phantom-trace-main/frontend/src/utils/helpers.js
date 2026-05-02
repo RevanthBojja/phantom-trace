@@ -1,11 +1,32 @@
 // ThreatSense — Utility helper functions
 // Used across all components
 
+function parseTimestamp(timestamp) {
+  if (!timestamp) return null
+  if (timestamp instanceof Date) return timestamp
+
+  if (typeof timestamp === 'string') {
+    const trimmed = timestamp.trim()
+    if (!trimmed) return null
+
+    // Treat timezone-less ISO values as UTC so they render consistently.
+    const hasTimezone = /[zZ]|[+-]\d{2}:?\d{2}$/.test(trimmed)
+    return new Date(hasTimezone ? trimmed : `${trimmed}Z`)
+  }
+
+  return new Date(timestamp)
+}
+
 // Convert ISO timestamp to relative time string
 // e.g. "2026-03-19T01:45:00Z" → "2 hours ago"
 export function timeAgo(timestamp) {
   const now = new Date()
-  const then = new Date(timestamp)
+  const then = parseTimestamp(timestamp)
+
+  if (!then || Number.isNaN(then.getTime())) {
+    return 'just now'
+  }
+
   const diffMs = now - then
   const diffMins = Math.floor(diffMs / 60000)
   const diffHours = Math.floor(diffMins / 60)
@@ -15,6 +36,31 @@ export function timeAgo(timestamp) {
   if (diffMins < 60)   return `${diffMins}m ago`
   if (diffHours < 24)  return `${diffHours}h ago`
   return `${diffDays}d ago`
+}
+
+// Format timestamp into Indian Standard Time (IST) human-readable string
+export function formatToIST(timestamp) {
+  const date = parseTimestamp(timestamp)
+  if (!date || Number.isNaN(date.getTime())) return ''
+
+  try {
+    const formatted = new Intl.DateTimeFormat('en-GB', {
+      year: 'numeric',
+      month: 'short',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+      timeZone: 'Asia/Kolkata'
+    }).format(date)
+    return `${formatted} IST`
+  } catch (e) {
+    // Fallback: apply offset manually (UTC +5:30)
+    const utc = date.getTime() + date.getTimezoneOffset() * 60000
+    const ist = new Date(utc + 5.5 * 60 * 60 * 1000)
+    const iso = ist.toISOString().replace('T', ' ').slice(0, 16)
+    return `${iso} IST`
+  }
 }
 
 // Returns Tailwind color classes for severity label
